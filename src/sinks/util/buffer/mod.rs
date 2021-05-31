@@ -9,6 +9,8 @@ pub mod json;
 #[cfg(feature = "sinks-loki")]
 pub mod loki;
 pub mod metrics;
+#[cfg(feature = "sinks-opsramp")]
+pub mod opsramp;
 pub mod partition;
 pub mod vec;
 
