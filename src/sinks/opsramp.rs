@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::thread;
+use std::fs;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -173,6 +174,8 @@ struct OpsRampSink {
     pub gaccess_token: Arc<RwLock<String>>,
     pub renewal_timer_set: Arc<RwLock<bool>>,
 
+    pub gclient_key: Arc<RwLock<String>>,
+    pub gclient_secret: Arc<RwLock<String>>,
     tls: Option<TlsOptions>,
 }
 
@@ -188,6 +191,8 @@ impl OpsRampSink {
             remove_label_fields: config.remove_label_fields,
             remove_timestamp: config.remove_timestamp,
             gaccess_token: Arc::new(RwLock::new("".to_string())),
+            gclient_key: Arc::new(RwLock::new("".to_string())),
+            gclient_secret: Arc::new(RwLock::new("".to_string())),
             renewal_timer_set: Arc::new(RwLock::new(false)),
             tls: config.tls,
         }
@@ -202,11 +207,28 @@ impl OpsRampSink {
             println!("Token renewal after secs-- {}", period);
             thread::sleep(std::time::Duration::from_secs(period));
             println!("==========Renewing authentication token===========");
-            *this.gaccess_token.write().unwrap() = "".to_string();   
-        });     
+            *this.gaccess_token.write().unwrap() = "".to_string();
+        });
     }
-    
+
 }
+
+pub fn keysecret_replacement(key:String,secret:String) -> Result<(), Box<std::error::Error>> {
+    let yaml_content = fs::read_to_string("/opt/opsramp/agent/conf/log/log-config.yaml");
+    if yaml_content.is_ok(){
+        let replaced_yaml_content = yaml_content.unwrap().replace(&key, "EncryptedKey").replace(&secret, "EncryptedSecret");
+        fs::write("/opt/opsramp/agent/conf/log/log-config.yaml",replaced_yaml_content);
+    }
+
+    let logd_yaml_content = fs::read_to_string("/opt/opsramp/agent/conf/log.d/log-config.yaml");
+    if logd_yaml_content.is_ok(){
+        let logd_replaced_yaml_content = logd_yaml_content.unwrap().replace(&key, "EncryptedKey").replace(&secret, "EncryptedSecret");
+        fs::write("/opt/opsramp/agent/conf/log.d/log-config.yaml",logd_replaced_yaml_content);
+    }
+
+    Ok(())
+}
+
 
 #[async_trait::async_trait]
 impl HttpSink for OpsRampSink {
@@ -247,11 +269,22 @@ impl HttpSink for OpsRampSink {
                 })
                 .ok()
         });
+
+        let ckey = client_key.clone().unwrap();
+        let csecret = client_secret.clone().unwrap();
+
         let key = PartitionKey {
             tenant_id,
             client_key,
             client_secret,
         };
+
+        if self.gclient_key.read().unwrap().to_string().is_empty(){
+            *self.gclient_key.write().unwrap() = ckey.clone();
+            *self.gclient_secret.write().unwrap()= csecret.clone();
+            println!("Calling key replacement");
+            keysecret_replacement(ckey,csecret);
+        }
 
         let mut labels = Vec::new();
 
@@ -314,19 +347,19 @@ impl HttpSink for OpsRampSink {
         )
     }
 
+
     async fn build_request(& self, output: Self::Output) -> crate::Result<http::Request<Vec<u8>>> {
         let (json, key) = output.into_parts();
         let tenant_id = key.tenant_id;
-        
+
         let body = serde_json::to_vec(&json).unwrap();
-        let mut access_token:String;     
+        let mut access_token:String;
         access_token = self.gaccess_token.read().unwrap().to_string();
 
         if access_token.is_empty() {
             println!("Fetching access token as it is empty.. ");
-            let client_key = key.client_key.clone().unwrap();
-            let client_secret = key.client_secret.clone().unwrap();
-
+            let client_key = self.gclient_key.read().unwrap().to_string();
+            let client_secret = self.gclient_secret.read().unwrap().to_string();
             let opsramp_auth_uri = format!("{}auth/oauth/token", self.endpoint.uri);
 
             let opsramp_auth_body = format!(
@@ -339,7 +372,6 @@ impl HttpSink for OpsRampSink {
                 .header("Accept", "application/json")
                 .body(hyper::Body::from(opsramp_auth_body))
                 .unwrap();
-
             let tls = TlsSettings::from_options(&self.tls)?;
             let client: HttpClient = HttpClient::new(tls)?;
             let opsramp_auth_res = client.send(opsramp_auth_req).await?;
@@ -362,13 +394,13 @@ impl HttpSink for OpsRampSink {
                 // Start timer to renew access token here
 				let timer_set:bool;
                 timer_set = *self.renewal_timer_set.read().unwrap();
-				
+
 				if !timer_set {
 					*self.renewal_timer_set.write().unwrap() = true;
                     println!("Setting Renewal timer {}",exp_secs);
                     self.spawn_renewal_token(exp_secs);
 				}
-				
+
                 //TO-DO Hide below log once tested
                 println!(
                     "access_token saved:{}",
@@ -379,7 +411,7 @@ impl HttpSink for OpsRampSink {
             //println!("Using saved Acess token : {} ",access_token);
             println!("Using saved Access token");
         }
-                   
+
         let uri = format!(
             "{}logmanagement/api/v7/tenants/{}/savelogs/loki/api/v1/push",
             self.endpoint.uri,
@@ -400,7 +432,7 @@ impl HttpSink for OpsRampSink {
         };
         auth.apply(&mut req);
 
-        Ok(req)        
+        Ok(req)
     }
 }
 
