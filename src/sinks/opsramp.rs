@@ -216,13 +216,13 @@ impl OpsRampSink {
 pub fn keysecret_replacement(key:String,secret:String) -> Result<(), Box<std::error::Error>> {
     let yaml_content = fs::read_to_string("/opt/opsramp/agent/conf/log/log-config.yaml");
     if yaml_content.is_ok(){
-        let replaced_yaml_content = yaml_content.unwrap().replace(&key, "EncryptedKey").replace(&secret, "EncryptedSecret");
+        let replaced_yaml_content = yaml_content.unwrap().replace(&key, "<ENCRYPTED_KEY>").replace(&secret, "<ENCRYPTED_SECRET>");
         fs::write("/opt/opsramp/agent/conf/log/log-config.yaml",replaced_yaml_content);
     }
 
     let logd_yaml_content = fs::read_to_string("/opt/opsramp/agent/conf/log.d/log-config.yaml");
     if logd_yaml_content.is_ok(){
-        let logd_replaced_yaml_content = logd_yaml_content.unwrap().replace(&key, "EncryptedKey").replace(&secret, "EncryptedSecret");
+        let logd_replaced_yaml_content = logd_yaml_content.unwrap().replace(&key, "<ENCRYPTED_KEY>").replace(&secret, "<ENCRYPTED_SECRET>");
         fs::write("/opt/opsramp/agent/conf/log.d/log-config.yaml",logd_replaced_yaml_content);
     }
 
