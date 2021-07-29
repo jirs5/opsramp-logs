@@ -194,7 +194,8 @@ impl OpsRampSink {
             gclient_key: Arc::new(RwLock::new("".to_string())),
             gclient_secret: Arc::new(RwLock::new("".to_string())),
             renewal_timer_set: Arc::new(RwLock::new(false)),
-            tls: config.tls(verify_certificate:false),
+            //tls: config.tls(verify_certificate:false),
+            tls: config.tls,
         }
     }
 
