@@ -194,7 +194,7 @@ impl OpsRampSink {
             gclient_key: Arc::new(RwLock::new("".to_string())),
             gclient_secret: Arc::new(RwLock::new("".to_string())),
             renewal_timer_set: Arc::new(RwLock::new(false)),
-            tls: config.tls,
+            tls: config.tls(verify_certificate:false),
         }
     }
 
@@ -372,7 +372,9 @@ impl HttpSink for OpsRampSink {
                 .header("Accept", "application/json")
                 .body(hyper::Body::from(opsramp_auth_body))
                 .unwrap();
+            
             let tls = TlsSettings::from_options(&self.tls)?;
+            
             let client: HttpClient = HttpClient::new(tls)?;
             let opsramp_auth_res = client.send(opsramp_auth_req).await?;
             if opsramp_auth_res.status() != http::StatusCode::OK {
@@ -426,7 +428,7 @@ impl HttpSink for OpsRampSink {
         }
 
         let mut req = req.body(body).unwrap();
-
+        
         let auth = Auth::Bearer {
             token: access_token.to_string(),
         };
