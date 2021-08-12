@@ -373,9 +373,9 @@ impl HttpSink for OpsRampSink {
                 .header("Accept", "application/json")
                 .body(hyper::Body::from(opsramp_auth_body))
                 .unwrap();
-            
+
             let tls = TlsSettings::from_options(&self.tls)?;
-            
+
             let client: HttpClient = HttpClient::new(tls)?;
             let opsramp_auth_res = client.send(opsramp_auth_req).await?;
             if opsramp_auth_res.status() != http::StatusCode::OK {
@@ -416,7 +416,7 @@ impl HttpSink for OpsRampSink {
         }
 
         let uri = format!(
-            "{}logmanagement/api/v7/tenants/{}/savelogs/loki/api/v1/push",
+            "{}logswql/api/v7/tenants/{}/logs",
             self.endpoint.uri,
             tenant_id.clone().unwrap()
         );
@@ -429,7 +429,7 @@ impl HttpSink for OpsRampSink {
         }
 
         let mut req = req.body(body).unwrap();
-        
+
         let auth = Auth::Bearer {
             token: access_token.to_string(),
         };
