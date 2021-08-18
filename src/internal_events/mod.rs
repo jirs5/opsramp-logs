@@ -3,6 +3,7 @@ use std::borrow::Cow;
 mod adaptive_concurrency;
 mod add_fields;
 mod add_tags;
+mod aggregate;
 mod ansi_stripper;
 #[cfg(feature = "sources-apache_metrics")]
 mod apache_metrics;
@@ -22,25 +23,36 @@ mod aws_kinesis_streams;
 pub(crate) mod aws_s3;
 #[cfg(feature = "sinks-aws_sqs")]
 mod aws_sqs;
+#[cfg(feature = "sinks-azure_blob")]
+pub(crate) mod azure_blob;
 mod blackhole;
 #[cfg(feature = "transforms-coercer")]
 mod coercer;
 #[cfg(feature = "transforms-concat")]
 mod concat;
+mod conditions;
 #[cfg(feature = "sinks-console")]
 mod console;
+#[cfg(feature = "sinks-datadog")]
+mod datadog_events;
 #[cfg(feature = "sinks-datadog")]
 mod datadog_logs;
 #[cfg(feature = "transforms-dedupe")]
 mod dedupe;
+#[cfg(feature = "sources-dnstap")]
+mod dnstap;
 #[cfg(feature = "sources-docker_logs")]
 mod docker_logs;
 mod elasticsearch;
 mod encoding_transcode;
+#[cfg(feature = "sources-eventstoredb_metrics")]
+mod eventstoredb_metrics;
 #[cfg(feature = "sources-exec")]
 mod exec;
 #[cfg(feature = "transforms-filter")]
 mod filter;
+#[cfg(feature = "sources-fluent")]
+mod fluent;
 #[cfg(feature = "sources-generator")]
 mod generator;
 #[cfg(feature = "transforms-geoip")]
@@ -60,7 +72,7 @@ mod json_parser;
 mod kafka;
 #[cfg(feature = "transforms-key_value_parser")]
 mod key_value_parser;
-#[cfg(feature = "sources-kubernetes-logs")]
+#[cfg(feature = "sources-kubernetes_logs")]
 mod kubernetes_logs;
 #[cfg(feature = "transforms-log_to_metric")]
 mod log_to_metric;
@@ -73,7 +85,7 @@ mod lua;
 mod metric_to_log;
 #[cfg(feature = "sources-mongodb_metrics")]
 mod mongodb_metrics;
-#[cfg(feature = "sinks-nats")]
+#[cfg(any(feature = "sources-nats", feature = "sinks-nats"))]
 mod nats;
 #[cfg(feature = "sources-nginx_metrics")]
 mod nginx_metrics;
@@ -84,6 +96,8 @@ mod process;
 #[cfg(any(feature = "sources-prometheus", feature = "sinks-prometheus"))]
 mod prometheus;
 mod pulsar;
+#[cfg(feature = "sinks-redis")]
+mod redis;
 #[cfg(feature = "transforms-reduce")]
 mod reduce;
 #[cfg(feature = "transforms-regex_parser")]
@@ -126,6 +140,7 @@ pub mod kubernetes;
 pub use self::adaptive_concurrency::*;
 pub use self::add_fields::*;
 pub use self::add_tags::*;
+pub use self::aggregate::*;
 pub use self::ansi_stripper::*;
 #[cfg(feature = "sources-apache_metrics")]
 pub use self::apache_metrics::*;
@@ -148,26 +163,35 @@ pub use self::blackhole::*;
 pub(crate) use self::coercer::*;
 #[cfg(feature = "transforms-concat")]
 pub use self::concat::*;
+pub use self::conditions::*;
 #[cfg(feature = "sinks-console")]
 pub use self::console::*;
+#[cfg(feature = "sinks-datadog")]
+pub use self::datadog_events::*;
 #[cfg(feature = "sinks-datadog")]
 pub use self::datadog_logs::*;
 #[cfg(feature = "transforms-dedupe")]
 pub(crate) use self::dedupe::*;
+#[cfg(feature = "sources-dnstap")]
+pub(crate) use self::dnstap::*;
 #[cfg(feature = "sources-docker_logs")]
 pub use self::docker_logs::*;
 pub use self::elasticsearch::*;
 pub use self::encoding_transcode::*;
+#[cfg(feature = "sources-eventstoredb_metrics")]
+pub use self::eventstoredb_metrics::*;
 #[cfg(feature = "sources-exec")]
 pub use self::exec::*;
 #[cfg(any(
     feature = "sources-file",
-    feature = "sources-kubernetes-logs",
+    feature = "sources-kubernetes_logs",
     feature = "sinks-file",
 ))]
 pub use self::file::*;
 #[cfg(feature = "transforms-filter")]
 pub use self::filter::*;
+#[cfg(feature = "sources-fluent")]
+pub use self::fluent::*;
 #[cfg(feature = "sources-generator")]
 pub use self::generator::*;
 #[cfg(feature = "transforms-geoip")]
@@ -187,7 +211,7 @@ pub(crate) use self::json_parser::*;
 pub use self::kafka::*;
 #[cfg(feature = "transforms-key_value_parser")]
 pub(crate) use self::key_value_parser::*;
-#[cfg(feature = "sources-kubernetes-logs")]
+#[cfg(feature = "sources-kubernetes_logs")]
 pub use self::kubernetes_logs::*;
 #[cfg(feature = "transforms-log_to_metric")]
 pub(crate) use self::log_to_metric::*;
@@ -198,7 +222,7 @@ pub use self::logplex::*;
 pub use self::lua::*;
 #[cfg(feature = "transforms-metric_to_log")]
 pub(crate) use self::metric_to_log::*;
-#[cfg(feature = "sinks-nats")]
+#[cfg(any(feature = "sources-nats", feature = "sinks-nats"))]
 pub use self::nats::*;
 #[cfg(feature = "sources-nginx_metrics")]
 pub(crate) use self::nginx_metrics::*;
@@ -209,6 +233,8 @@ pub use self::process::*;
 #[cfg(any(feature = "sources-prometheus", feature = "sinks-prometheus"))]
 pub(crate) use self::prometheus::*;
 pub use self::pulsar::*;
+#[cfg(feature = "sinks-redis")]
+pub use self::redis::*;
 #[cfg(feature = "transforms-reduce")]
 pub(crate) use self::reduce::*;
 #[cfg(feature = "transforms-regex_parser")]
@@ -270,7 +296,7 @@ macro_rules! emit {
 // Modules that require emit! macro so they need to be defined after the macro.
 #[cfg(any(
     feature = "sources-file",
-    feature = "sources-kubernetes-logs",
+    feature = "sources-kubernetes_logs",
     feature = "sinks-file",
 ))]
 mod file;
@@ -295,6 +321,6 @@ mod test {
     #[test]
     fn truncate_utf8() {
         let message = "Hello 😁 this is test.";
-        assert_eq!("Hello [...]", super::truncate_string_at(&message, 13));
+        assert_eq!("Hello [...]", super::truncate_string_at(message, 13));
     }
 }

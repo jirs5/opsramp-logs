@@ -1,5 +1,5 @@
-use crate::{buffers::Acker, event::Event};
-use futures::{future::BoxFuture, FutureExt, Stream};
+use crate::buffers::{Acker, EventStream};
+use futures::{future::BoxFuture, FutureExt};
 use pin_project::pin_project;
 use std::{
     fmt,
@@ -12,7 +12,7 @@ pub enum TaskOutput {
     Source,
     Transform,
     /// Buffer of sink
-    Sink(Pin<Box<dyn Stream<Item = Event> + Send>>, Acker),
+    Sink(Pin<EventStream>, Acker),
     Healthcheck,
 }
 
@@ -21,12 +21,12 @@ pub enum TaskOutput {
 pub struct Task {
     #[pin]
     inner: BoxFuture<'static, Result<TaskOutput, ()>>,
-    name: String,
+    id: String,
     typetag: String,
 }
 
 impl Task {
-    pub fn new<S1, S2, Fut>(name: S1, typetag: S2, inner: Fut) -> Self
+    pub fn new<S1, S2, Fut>(id: S1, typetag: S2, inner: Fut) -> Self
     where
         S1: Into<String>,
         S2: Into<String>,
@@ -34,13 +34,13 @@ impl Task {
     {
         Self {
             inner: inner.boxed(),
-            name: name.into(),
+            id: id.into(),
             typetag: typetag.into(),
         }
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     pub fn typetag(&self) -> &str {
@@ -60,7 +60,7 @@ impl Future for Task {
 impl fmt::Debug for Task {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Task")
-            .field("name", &self.name)
+            .field("id", &self.id)
             .field("typetag", &self.typetag)
             .finish()
     }

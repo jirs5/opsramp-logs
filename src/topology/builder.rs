@@ -5,14 +5,15 @@ use super::{
 };
 use crate::{
     buffers,
-    config::{DataType, SinkContext, SourceContext},
+    config::{DataType, ProxyConfig, SinkContext, SourceContext},
     event::Event,
-    internal_events::{EventIn, EventOut, EventZeroIn},
+    internal_events::{EventIn, EventOut},
     shutdown::SourceShutdownCoordinator,
     transforms::Transform,
     Pipeline,
 };
 use futures::{future, stream, FutureExt, SinkExt, StreamExt, TryFutureExt};
+use std::pin::Pin;
 use std::{
     collections::HashMap,
     future::ready,
@@ -22,7 +23,7 @@ use stream_cancel::{StreamExt as StreamCancelExt, Trigger, Tripwire};
 use tokio::time::{timeout, Duration};
 
 pub struct Pieces {
-    pub inputs: HashMap<String, (buffers::BufferInputCloner, Vec<String>)>,
+    pub inputs: HashMap<String, (buffers::BufferInputCloner<Event>, Vec<String>)>,
     pub outputs: HashMap<String, fanout::ControlChannel>,
     pub tasks: HashMap<String, Task>,
     pub source_tasks: HashMap<String, Task>,
@@ -48,27 +49,29 @@ pub async fn build_pieces(
     let mut errors = vec![];
 
     // Build sources
-    for (name, source) in config
+    for (id, source) in config
         .sources
         .iter()
-        .filter(|(name, _)| diff.sources.contains_new(&name))
+        .filter(|(id, _)| diff.sources.contains_new(id))
     {
         let (tx, rx) = futures::channel::mpsc::channel(1000);
         let pipeline = Pipeline::from_sender(tx, vec![]);
 
-        let typetag = source.source_type();
+        let typetag = source.inner.source_type();
 
-        let (shutdown_signal, force_shutdown_tripwire) = shutdown_coordinator.register_source(name);
+        let (shutdown_signal, force_shutdown_tripwire) = shutdown_coordinator.register_source(id);
 
         let context = SourceContext {
-            name: name.into(),
+            id: id.into(),
             globals: config.global.clone(),
             shutdown: shutdown_signal,
             out: pipeline,
+            acknowledgements: source.acknowledgements,
+            proxy: ProxyConfig::merge_with_env(&config.global.proxy, &source.proxy),
         };
-        let server = match source.build(context).await {
+        let server = match source.inner.build(context).await {
             Err(error) => {
-                errors.push(format!("Source \"{}\": {}", name, error));
+                errors.push(format!("Source \"{}\": {}", id, error));
                 continue;
             }
             Ok(server) => server,
@@ -76,7 +79,7 @@ pub async fn build_pieces(
 
         let (output, control) = Fanout::new();
         let pump = rx.map(Ok).forward(output).map_ok(|_| TaskOutput::Source);
-        let pump = Task::new(name, typetag, pump);
+        let pump = Task::new(id, typetag, pump);
 
         // The force_shutdown_tripwire is a Future that when it resolves means that this source
         // has failed to shut down gracefully within its allotted time window and instead should be
@@ -84,7 +87,6 @@ pub async fn build_pieces(
         // force_shutdown_tripwire. That means that if the force_shutdown_tripwire resolves while
         // the server Task is still running the Task will simply be dropped on the floor.
         let server = async {
-            emit!(EventZeroIn);
             match future::try_select(server, force_shutdown_tripwire.unit_error().boxed()).await {
                 Ok(_) => {
                     debug!("Finished.");
@@ -93,18 +95,18 @@ pub async fn build_pieces(
                 Err(_) => Err(()),
             }
         };
-        let server = Task::new(name, typetag, server);
+        let server = Task::new(id, typetag, server);
 
-        outputs.insert(name.clone(), control);
-        tasks.insert(name.clone(), pump);
-        source_tasks.insert(name.clone(), server);
+        outputs.insert(id.clone(), control);
+        tasks.insert(id.clone(), pump);
+        source_tasks.insert(id.clone(), server);
     }
 
     // Build transforms
-    for (name, transform) in config
+    for (id, transform) in config
         .transforms
         .iter()
-        .filter(|(name, _)| diff.transforms.contains_new(&name))
+        .filter(|(id, _)| diff.transforms.contains_new(id))
     {
         let trans_inputs = &transform.inputs;
 
@@ -113,15 +115,19 @@ pub async fn build_pieces(
         let input_type = transform.inner.input_type();
         let transform = match transform.inner.build(&config.global).await {
             Err(error) => {
-                errors.push(format!("Transform \"{}\": {}", name, error));
+                errors.push(format!("Transform \"{}\": {}", id, error));
                 continue;
             }
             Ok(transform) => transform,
         };
 
-        let (input_tx, input_rx) = futures::channel::mpsc::channel(100);
-        let input_tx = buffers::BufferInputCloner::Memory(input_tx, buffers::WhenFull::Block);
-        let input_rx = crate::utilization::wrap(input_rx);
+        let (input_tx, input_rx, _) =
+            vector_core::buffers::build(vector_core::buffers::Variant::Memory {
+                max_events: 100,
+                when_full: vector_core::buffers::WhenFull::Block,
+            })
+            .unwrap();
+        let input_rx = crate::utilization::wrap(Pin::new(input_rx));
 
         let (output, control) = Fanout::new();
 
@@ -154,18 +160,18 @@ pub async fn build_pieces(
             debug!("Finished.");
             TaskOutput::Transform
         });
-        let task = Task::new(name, typetag, transform);
+        let task = Task::new(id, typetag, transform);
 
-        inputs.insert(name.clone(), (input_tx, trans_inputs.clone()));
-        outputs.insert(name.clone(), control);
-        tasks.insert(name.clone(), task);
+        inputs.insert(id.clone(), (input_tx, trans_inputs.clone()));
+        outputs.insert(id.clone(), control);
+        tasks.insert(id.clone(), task);
     }
 
     // Build sinks
-    for (name, sink) in config
+    for (id, sink) in config
         .sinks
         .iter()
-        .filter(|(name, _)| diff.sinks.contains_new(&name))
+        .filter(|(id, _)| diff.sinks.contains_new(id))
     {
         let sink_inputs = &sink.inputs;
         let healthcheck = sink.healthcheck();
@@ -174,13 +180,13 @@ pub async fn build_pieces(
         let typetag = sink.inner.sink_type();
         let input_type = sink.inner.input_type();
 
-        let (tx, rx, acker) = if let Some(buffer) = buffers.remove(name) {
+        let (tx, rx, acker) = if let Some(buffer) = buffers.remove(id) {
             buffer
         } else {
-            let buffer = sink.buffer.build(&config.global.data_dir, &name);
+            let buffer = sink.buffer.build(&config.global.data_dir, id);
             match buffer {
                 Err(error) => {
-                    errors.push(format!("Sink \"{}\": {}", name, error));
+                    errors.push(format!("Sink \"{}\": {}", id, error));
                     continue;
                 }
                 Ok((tx, rx, acker)) => (tx, Arc::new(Mutex::new(Some(rx.into()))), acker),
@@ -191,11 +197,12 @@ pub async fn build_pieces(
             acker: acker.clone(),
             healthcheck,
             globals: config.global.clone(),
+            proxy: ProxyConfig::merge_with_env(&config.global.proxy, sink.proxy()),
         };
 
         let (sink, healthcheck) = match sink.inner.build(cx).await {
             Err(error) => {
-                errors.push(format!("Sink \"{}\": {}", name, error));
+                errors.push(format!("Sink \"{}\": {}", id, error));
                 continue;
             }
             Ok(built) => built,
@@ -230,9 +237,9 @@ pub async fn build_pieces(
                 TaskOutput::Sink(rx, acker)
             })
         };
-        let task = Task::new(name, typetag, sink);
+        let task = Task::new(id, typetag, sink);
 
-        let component_name = name.clone();
+        let component_id = id.clone();
         let healthcheck_task = async move {
             if enable_healthcheck {
                 let duration = Duration::from_secs(10);
@@ -248,7 +255,9 @@ pub async fn build_pieces(
                                 %error,
                                 component_kind = "sink",
                                 component_type = typetag,
-                                ?component_name,
+                                %component_id,
+                                // maintained for compatibility
+                                component_name = %component_id,
                             );
                             Err(())
                         }
@@ -257,7 +266,9 @@ pub async fn build_pieces(
                                 msg = "Healthcheck: timeout.",
                                 component_kind = "sink",
                                 component_type = typetag,
-                                ?component_name,
+                                %component_id,
+                                // maintained for compatibility
+                                component_name = %component_id,
                             );
                             Err(())
                         }
@@ -268,12 +279,12 @@ pub async fn build_pieces(
                 Ok(TaskOutput::Healthcheck)
             }
         };
-        let healthcheck_task = Task::new(name, typetag, healthcheck_task);
+        let healthcheck_task = Task::new(id, typetag, healthcheck_task);
 
-        inputs.insert(name.clone(), (tx, sink_inputs.clone()));
-        healthchecks.insert(name.clone(), healthcheck_task);
-        tasks.insert(name.clone(), task);
-        detach_triggers.insert(name.clone(), trigger);
+        inputs.insert(id.clone(), (tx, sink_inputs.clone()));
+        healthchecks.insert(id.clone(), healthcheck_task);
+        tasks.insert(id.clone(), task);
+        detach_triggers.insert(id.clone(), trigger);
     }
 
     if errors.is_empty() {

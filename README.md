@@ -9,7 +9,7 @@
   </strong>
 </p>
 <p align="center">
-  <img src="docs/assets/images/diagram.svg" alt="Vector">
+  <img src="website/static/img/diagram.svg" alt="Vector">
 </p>
 
 ## What is Vector?
@@ -18,12 +18,13 @@ Vector is a high-performance, end-to-end (agent & aggregator) observability data
 pipeline that puts you in control of your observability data.
 [Collect][docs.sources], [transform][docs.transforms], and [route][docs.sinks]
 all your logs, metrics, and traces to any vendors you want today and any other
-vendors you may want tomorrow. Vector enables dramatic cost reduction, novel data
-enrichment, and data security where you need it, not where is most convenient for
-your vendors. Open source and up to 10x faster than every alternative.
+vendors you may want tomorrow. Vector enables dramatic cost reduction, novel
+data enrichment, and data security where you need it, not where is most
+convenient for your vendors. Additionally, it is open source and up to 10x
+faster than every alternative in the space.
 
-To get started, follow our [**quickstart guide**][docs.quickstart]
-or [**install Vector**][docs.installation].
+To get started, follow our [**quickstart guide**][docs.quickstart] or [**install
+Vector**][docs.installation].
 
 ### Principles
 
@@ -78,7 +79,7 @@ or [**install Vector**][docs.installation].
 
 ### Administration
 
-* [**Process management**][docs.administration.process-management]
+* [**Management**][docs.administration.management]
 * [**Monitoring & observing**][docs.administration.monitoring]
 * [**Upgrading**][docs.administration.upgrading]
 * [**Validating**][docs.administration.validating]
@@ -88,7 +89,7 @@ or [**install Vector**][docs.installation].
 * [**Community**][urls.vector_community] - [chat][urls.vector_chat], [@vectordotdev][urls.vector_twitter]
 * [**Releases**][urls.vector_releases] - [latest][urls.vector_releases]
 * [**Roadmap**][urls.vector_roadmap] - [vote on new features][urls.vote_feature]
-* **Policies** - [Code of Conduct][urls.vector_code_of_conduct], [Privacy][urls.vector_privacy_policy], [Releasing][urls.vector_release_policy], [Security][urls.vector_security_policy]
+* **Policies** - [Code of Conduct][urls.vector_code_of_conduct], [Privacy][urls.vector_privacy_policy], [Releasing][urls.vector_release_policy], [RFCs][urls.vector_rfc_policy] [Reviewing][urls.vector_release_policy], [Security][urls.vector_security_policy]
 
 ## Comparisons
 
@@ -150,13 +151,13 @@ Vector is an end-to-end, unified, open data platform.
 ---
 
 <p align="center">
-  Developed with ❤️ by <strong><a href="https://timber.io">Timber.io</a></strong> - <a href="https://github.com/timberio/vector/security/policy">Security Policy</a> - <a href="https://github.com/timberio/vector/blob/master/PRIVACY.md">Privacy Policy</a>
+  Developed with ❤️ by <strong><a href="https://datadoghq.com">Datadog</a></strong> - <a href="https://github.com/timberio/vector/security/policy">Security Policy</a> - <a href="https://github.com/timberio/vector/blob/master/PRIVACY.md">Privacy Policy</a>
 </p>
 
 [docs.about.concepts]: https://vector.dev/docs/about/concepts/
 [docs.about.under-the-hood]: https://vector.dev/docs/about/under-the-hood/
 [docs.administration.monitoring]: https://vector.dev/docs/administration/monitoring/
-[docs.administration.process-management]: https://vector.dev/docs/administration/process-management/
+[docs.administration.management]: https://vector.dev/docs/administration/management/
 [docs.administration.upgrading]: https://vector.dev/docs/administration/upgrading/
 [docs.administration.validating]: https://vector.dev/docs/administration/validating/
 [docs.architecture.concurrency-model]: https://vector.dev/docs/about/under-the-hood/architecture/concurrency-model/
@@ -217,9 +218,12 @@ Vector is an end-to-end, unified, open data platform.
 [urls.vector_community]: https://vector.dev/community/
 [urls.vector_privacy_policy]: https://github.com/timberio/vector/blob/master/PRIVACY.md
 [urls.vector_release_policy]: https://github.com/timberio/vector/blob/master/RELEASING.md
+[urls.vector_review_policy]: https://github.com/timberio/vector/blob/master/REVIEWING.md
 [urls.vector_releases]: https://vector.dev/releases/latest/
+[urls.vector_rfc_policy]: https://github.com/timberio/vector/blob/master/rfcs/README.md
 [urls.vector_roadmap]: https://roadmap.vector.dev
 [urls.vector_security_policy]: https://github.com/timberio/vector/security/policy
 [urls.vector_test_harness]: https://github.com/timberio/vector-test-harness/
 [urls.vector_twitter]: https://twitter.com/vectordotdev
 [urls.vote_feature]: https://github.com/timberio/vector/issues?q=is%3Aissue+is%3Aopen+sort%3Areactions-%2B1-desc+label%3A%22Type%3A+New+Feature%22
+

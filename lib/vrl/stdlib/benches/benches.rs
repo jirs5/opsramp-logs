@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Local, TimeZone, Utc};
+use chrono::{DateTime, Datelike, TimeZone, Utc};
 use criterion::{criterion_group, criterion_main, Criterion};
 use regex::Regex;
 use shared::btreemap;
@@ -10,27 +10,34 @@ criterion_group!(
     // https://github.com/timberio/vector/pull/6408
     config = Criterion::default().noise_threshold(0.05);
     targets = assert,
+              assert_eq,
               ceil,
               compact,
               contains,
               decode_base64,
+              decode_percent,
               // TODO: Cannot pass a Path to bench_function
               //del,
               downcase,
               encode_base64,
+              encode_key_value,
               encode_json,
               encode_logfmt,
+              encode_percent,
               ends_with,
               // TODO: Cannot pass a Path to bench_function
               //exists
               flatten,
               floor,
+              format_int,
               format_number,
               format_timestamp,
               get_env_var,
               get_hostname,
               includes,
+              ip_aton,
               ip_cidr_contains,
+              ip_ntoa,
               ip_subnet,
               ip_to_ipv6,
               ipv6_to_ipv4,
@@ -48,6 +55,9 @@ criterion_group!(
               length,
               log,
               r#match,
+              match_any,
+              match_array,
+              match_datadog_query,
               md5,
               merge,
               // TODO: value is dynamic so we cannot assert equality
@@ -63,18 +73,21 @@ criterion_group!(
               parse_grok,
               parse_key_value,
               parse_klog,
+              parse_int,
               parse_json,
               parse_nginx_log,
               parse_query_string,
               parse_regex,
               parse_regex_all,
+              parse_ruby_hash,
               parse_syslog,
               parse_timestamp,
               parse_tokens,
               parse_url,
+              parse_user_agent,
+              parse_xml,
               push,
-              // TODO: Has not been ported to vrl/stdlib yet
-              //redact,
+              redact,
               replace,
               round,
               sha1,
@@ -96,6 +109,8 @@ criterion_group!(
               to_timestamp,
               to_unix_timestamp,
               truncate,
+              // TODO: Cannot pass a Path to bench_function
+              //unnest
               // TODO: value is dynamic so we cannot assert equality
               //uuidv4,
               upcase
@@ -116,6 +131,15 @@ bench_function! {
 
     literal {
         args: func_args![condition: value!(true), message: "must be true"],
+        want: Ok(value!(true)),
+    }
+}
+
+bench_function! {
+    assert_eq=> vrl_stdlib::AssertEq;
+
+    literal {
+        args: func_args![left: value!(true), right: value!(true), message: "must be true"],
         want: Ok(value!(true)),
     }
 }
@@ -171,6 +195,15 @@ bench_function! {
 }
 
 bench_function! {
+    decode_percent => vrl_stdlib::DecodePercent;
+
+    literal {
+        args: func_args![value: "foo%20bar%3F"],
+        want: Ok("foo bar?"),
+    }
+}
+
+bench_function! {
     downcase => vrl_stdlib::Downcase;
 
     literal {
@@ -185,6 +218,59 @@ bench_function! {
     literal {
         args: func_args![value: "some+=string/value"],
         want: Ok("c29tZSs9c3RyaW5nL3ZhbHVl"),
+    }
+}
+
+bench_function! {
+    encode_key_value => vrl_stdlib::EncodeKeyValue;
+
+    encode_complex_value {
+        args: func_args![value:
+            btreemap! {
+                "msg" => r#"result: {"authz": false, "length": 42}\n"#,
+                "severity" => "    panic"
+            },
+            key_value_delimiter: "==",
+            field_delimiter: "!!!"
+            ],
+        want: Ok(r#"msg=="result: {\"authz\": false, \"length\": 42}\\n"!!!severity=="    panic""#),
+    }
+
+    encode_key_value {
+        args: func_args![value:
+            btreemap! {
+                "mow" => "vvo",
+                "vvo" => "pkc",
+                "pkc" => "hrb",
+                "hrb" => "tsn",
+                "tsn" => "can",
+                "can" => "pnh",
+                "pnh" => "sin",
+                "sin" => "syd"
+            },
+            key_value_delimiter: ":",
+            field_delimiter: ","
+        ],
+        want: Ok(r#"can:pnh,hrb:tsn,mow:vvo,pkc:hrb,pnh:sin,sin:syd,tsn:can,vvo:pkc"#),
+    }
+
+    fields_ordering {
+        args: func_args![value:
+            btreemap! {
+                "mow" => "vvo",
+                "vvo" => "pkc",
+                "pkc" => "hrb",
+                "hrb" => "tsn",
+                "tsn" => "can",
+                "can" => "pnh",
+                "pnh" => "sin",
+                "sin" => "syd"
+            },
+            fields_ordering: value!(["mow", "vvo", "pkc", "hrb", "tsn", "can", "pnh", "sin"]),
+            key_value_delimiter: ":",
+            field_delimiter: ","
+        ],
+        want: Ok(r#"mow:vvo,vvo:pkc,pkc:hrb,hrb:tsn,tsn:can,can:pnh,pnh:sin,sin:syd"#),
     }
 }
 
@@ -219,6 +305,20 @@ bench_function! {
             fields_ordering: value!(["lvl", "msg"])
         ],
         want: Ok(r#"lvl=info msg="This is a log message" log_id=12345"#),
+    }
+}
+
+bench_function! {
+    encode_percent => vrl_stdlib::EncodePercent;
+
+    non_alphanumeric {
+        args: func_args![value: r#"foo bar?"#],
+        want: Ok(r#"foo%20bar%3F"#),
+    }
+
+    controls {
+        args: func_args![value: r#"foo bar"#, ascii_set: "CONTROLS"],
+        want: Ok(r#"foo %14bar"#),
     }
 }
 
@@ -276,6 +376,20 @@ bench_function! {
 }
 
 bench_function! {
+    format_int => vrl_stdlib::FormatInt;
+
+    decimal {
+        args: func_args![value: 42],
+        want: Ok("42"),
+    }
+
+    hexidecimal {
+        args: func_args![value: 42, base: 16],
+        want: Ok(value!("2a")),
+    }
+}
+
+bench_function! {
     format_number => vrl_stdlib::FormatNumber;
 
     literal {
@@ -324,7 +438,15 @@ bench_function! {
         args: func_args![value: value!(["foo", 1, true, [1,2,3]]), item: value!("foo")],
         want: Ok(value!(true)),
     }
+}
 
+bench_function! {
+    ip_aton => vrl_stdlib::IpAton;
+
+    valid {
+        args: func_args![value: "1.2.3.4"],
+        want: Ok(value!(67305985)),
+    }
 }
 
 bench_function! {
@@ -338,6 +460,15 @@ bench_function! {
     ipv6 {
         args: func_args![cidr: "2001:4f8:3:ba::/64", value: "2001:4f8:3:ba:2e0:81ff:fe22:d1f1"],
         want: Ok(true),
+    }
+}
+
+bench_function! {
+    ip_ntoa => vrl_stdlib::IpNtoa;
+
+    valid {
+        args: func_args![value: 67305985],
+        want: Ok(value!("1.2.3.4")),
     }
 }
 
@@ -586,6 +717,140 @@ bench_function! {
 
     simple {
         args: func_args![value: "foo 2 bar", pattern: Regex::new("foo \\d bar").unwrap()],
+        want: Ok(true),
+    }
+}
+
+bench_function! {
+    match_any => vrl_stdlib::MatchAny;
+
+    simple {
+        args: func_args![value: "foo 2 bar", patterns: vec![Regex::new(r"foo \d bar").unwrap()]],
+        want: Ok(true),
+    }
+}
+
+bench_function! {
+    match_array => vrl_stdlib::MatchArray;
+
+    single_match {
+        args: func_args![
+            value: value!(["foo 1 bar"]),
+            pattern: Regex::new(r"foo \d bar").unwrap(),
+        ],
+        want: Ok(true),
+    }
+
+    no_match {
+        args: func_args![
+            value: value!(["foo x bar"]),
+            pattern: Regex::new(r"foo \d bar").unwrap(),
+        ],
+        want: Ok(false),
+    }
+
+    some_match {
+        args: func_args![
+            value: value!(["foo 2 bar", "foo 3 bar", "foo 4 bar", "foo 5 bar"]),
+            pattern: Regex::new(r"foo \d bar").unwrap(),
+        ],
+        want: Ok(true),
+    }
+
+    all_match {
+        args: func_args![
+            value: value!(["foo 2 bar", "foo 3 bar", "foo 4 bar", "foo 5 bar"]),
+            pattern: Regex::new(r"foo \d bar").unwrap(),
+            all: value!(true)
+        ],
+        want: Ok(true),
+    }
+
+    not_all_match {
+        args: func_args![
+            value: value!(["foo 2 bar", "foo 3 bar", "foo 4 bar", "foo x bar"]),
+            pattern: Regex::new(r"foo \d bar").unwrap(),
+            all: value!(true)
+        ],
+        want: Ok(false),
+    }
+}
+
+bench_function! {
+    match_datadog_query => vrl_stdlib::MatchDatadogQuery;
+
+    equals_message {
+        args: func_args![value: value!({"message": "match by word boundary"}), query: "match"],
+        want: Ok(true),
+    }
+
+    equals_tag {
+        args: func_args![value: value!({"tags": ["x:1", "y:2", "z:3"]}), query: "y:2"],
+        want: Ok(true),
+    }
+
+    equals_facet {
+        args: func_args![value: value!({"custom": {"z": 1}}), query: "@z:1"],
+        want: Ok(true),
+    }
+
+    negate_wildcard_prefix_message {
+        args: func_args![value: value!({"message": "vector"}), query: "-*tor"],
+        want: Ok(false),
+    }
+
+    wildcard_prefix_tag_no_match {
+        args: func_args![value: value!({"tags": ["b:vector"]}), query: "a:*tor"],
+        want: Ok(false),
+    }
+
+    wildcard_suffix_facet {
+        args: func_args![value: value!({"custom": {"a": "vector"}}), query: "@a:vec*"],
+        want: Ok(true),
+    }
+
+    wildcard_multiple_message {
+        args: func_args![value: value!({"message": "vector"}), query: "v*c*r"],
+        want: Ok(true),
+    }
+
+    not_wildcard_multiple_facet_no_match {
+        args: func_args![value: value!({"custom": {"b": "vector"}}), query: "NOT @a:v*c*r"],
+        want: Ok(true),
+    }
+
+    negate_range_facet_between_no_match {
+        args: func_args![value: value!({"custom": {"a": 200}}), query: "-@a:[1 TO 6]"],
+        want: Ok(true),
+    }
+
+    not_range_facet_between_no_match_string {
+        args: func_args![value: value!({"custom": {"a": "7"}}), query: r#"NOT @a:["1" TO "60"]"#],
+        want: Ok(true),
+    }
+
+    exclusive_range_message_lower {
+        args: func_args![value: value!({"message": "200"}), query: "{1 TO *}"],
+        want: Ok(true),
+    }
+
+    not_exclusive_range_message_upper_no_match {
+        args: func_args![value: value!({"message": "3"}), query: "NOT {* TO 3}"],
+        want: Ok(true),
+    }
+
+    negate_message_and_or_2 {
+        args: func_args![value: value!({"message": "this contains the_other"}), query: "this AND -(that OR the_other)"],
+        want: Ok(false),
+    }
+
+    message_or_and {
+        args: func_args![value: value!({"message": "just this"}), query: "this OR (that AND the_other)"],
+        want: Ok(true),
+    }
+
+    kitchen_sink_2 {
+        args: func_args![value: value!({"tags": ["c:that", "d:the_other"], "custom": {"b": "testing", "e": 3}}), query: "host:this OR ((@b:test* AND c:that) AND d:the_other @e:[1 TO 5])"],
         want: Ok(true),
     }
 }
@@ -903,6 +1168,25 @@ bench_function! {
 }
 
 bench_function! {
+    parse_int => vrl_stdlib::ParseInt;
+
+    decimal {
+        args: func_args![value: "-42"],
+        want: Ok(-42),
+    }
+
+    hexidecimal {
+        args: func_args![value: "0x2a"],
+        want: Ok(42),
+    }
+
+    explicit_hexidecimal {
+        args: func_args![value: "2a", base: 16],
+        want: Ok(42),
+    }
+}
+
+bench_function! {
     parse_json => vrl_stdlib::ParseJson;
 
     map {
@@ -917,6 +1201,20 @@ bench_function! {
     logfmt {
         args: func_args! [
             value: r#"level=info msg="Stopping all fetchers" tag=stopping_fetchers id=ConsumerFetcherManager-1382721708341 module=kafka.consumer.ConsumerFetcherManager"#
+        ],
+        want: Ok(value!({
+            level: "info",
+            msg: "Stopping all fetchers",
+            tag: "stopping_fetchers",
+            id: "ConsumerFetcherManager-1382721708341",
+            module: "kafka.consumer.ConsumerFetcherManager"
+        }))
+    }
+
+    standalone_key_disabled {
+        args: func_args! [
+            value: r#"level=info msg="Stopping all fetchers" tag=stopping_fetchers id=ConsumerFetcherManager-1382721708341 module=kafka.consumer.ConsumerFetcherManager"#,
+            accept_standalone_key: false
         ],
         want: Ok(value!({
             level: "info",
@@ -1069,6 +1367,23 @@ bench_function! {
 }
 
 bench_function! {
+    parse_ruby_hash => vrl_stdlib::ParseRubyHash;
+
+    matches {
+        args: func_args![
+            value: r#"{ "test" => "value", "testNum" => 0.2, "testObj" => { "testBool" => true } }"#,
+        ],
+        want: Ok(value!({
+            test: "value",
+            testNum: 0.2,
+            testObj: {
+                testBool: true,
+            }
+        }))
+    }
+}
+
+bench_function! {
     parse_syslog => vrl_stdlib::ParseSyslog;
 
     rfc3164 {
@@ -1078,7 +1393,7 @@ bench_function! {
         want: Ok(value!({
             "severity": "info",
             "facility": "local7",
-            "timestamp": (Local.ymd(2020, 12, 28).and_hms_milli(16, 49, 7, 0).with_timezone(&Utc)),
+            "timestamp": (Utc.ymd(2020, 12, 28).and_hms_milli(16, 49, 7, 0)),
             "hostname": "plertrood-thinkpad-x220",
             "appname": "nginx",
             "message": r#"127.0.0.1 - - [28/Dec/2019:16:49:07 +0000] "GET / HTTP/1.1" 304 0 "-" "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:71.0) Gecko/20100101 Firefox/71.0""#,
@@ -1154,6 +1469,200 @@ bench_function! {
 }
 
 bench_function! {
+    parse_user_agent => vrl_stdlib::ParseUserAgent;
+
+    fast {
+        args: func_args![value: "Mozilla Firefox 1.0.1 Mozilla/5.0 (X11; U; Linux i686; de-DE; rv:1.7.6) Gecko/20050223 Firefox/1.0.1"],
+        want: Ok(value!({
+            "browser": {
+                "family": "Firefox",
+                "version": "1.0.1",
+            },
+            "device": {
+                "category": "pc",
+            },
+            "os": {
+                "family": "Linux",
+                "version": null,
+            },
+        }))
+    }
+
+    enriched {
+        args: func_args![value: "Opera/9.80 (J2ME/MIDP; Opera Mini/4.3.24214; iPhone; CPU iPhone OS 4_2_1 like Mac OS X; AppleWebKit/24.783; U; en) Presto/2.5.25 Version/10.54", mode: "enriched"],
+        want: Ok(value!({
+            "browser": {
+                "family": "Opera Mini",
+                "major": "4",
+                "minor": "3",
+                "patch": "24214",
+                "version": "10.54",
+            },
+            "device": {
+                "brand": "Apple",
+                "category": "smartphone",
+                "family": "iPhone",
+                "model": "iPhone",
+            },
+            "os": {
+                "family": "iOS",
+                "major": "4",
+                "minor": "2",
+                "patch": "1",
+                "patch_minor": null,
+                "version": "4.2.1",
+            },
+        }))
+    }
+}
+
+bench_function! {
+    parse_xml => vrl_stdlib::ParseXml;
+
+    simple_text {
+        args: func_args![ value: r#"<a>test</a>"# ],
+        want: Ok(value!({ "a": "test" }))
+    }
+
+    include_attr {
+        args: func_args![ value: r#"<a href="https://vector.dev">test</a>"# ],
+        want: Ok(value!({ "a": { "@href": "https://vector.dev", "text": "test" } }))
+    }
+
+    exclude_attr {
+        args: func_args![ value: r#"<a href="https://vector.dev">test</a>"#, include_attr: false ],
+        want: Ok(value!({ "a": "test" }))
+    }
+
+    custom_text_key {
+        args: func_args![ value: r#"<b>test</b>"#, text_key: "node", always_use_text_key: true ],
+        want: Ok(value!({ "b": { "node": "test" } }))
+    }
+
+    nested_object {
+        args: func_args![ value: r#"<a><b>one</b><c>two</c></a>"# ],
+        want: Ok(value!({ "a": { "b": "one", "c": "two" } }))
+    }
+
+    nested_object_array {
+        args: func_args![ value: r#"<a><b>one</b><b>two</b></a>"# ],
+        want: Ok(value!({ "a": { "b": ["one", "two"] } }))
+    }
+
+    header_and_comments {
+        args: func_args![ value: indoc!{r#"
+            <?xml version="1.0" encoding="ISO-8859-1"?>
+            <!-- Example found somewhere in the deep depths of the web -->
+            <note>
+                <to>Tove</to>
+                <!-- Randomly inserted inner comment -->
+                <from>Jani</from>
+                <heading>Reminder</heading>
+                <body>Don't forget me this weekend!</body>
+            </note>
+
+            <!-- Could literally be placed anywhere -->
+        "#}],
+        want: Ok(value!(
+            {
+                "note": {
+                    "to": "Tove",
+                    "from": "Jani",
+                    "heading": "Reminder",
+                    "body": "Don't forget me this weekend!"
+                }
+            }
+        ))
+    }
+
+    mixed_types {
+        args: func_args![ value: indoc!{r#"
+            <?xml version="1.0" encoding="ISO-8859-1"?>
+            <!-- Mixed types -->
+            <data>
+                <!-- Booleans -->
+                <item>true</item>
+                <item>false</item>
+                <!-- String -->
+                <item>string!</item>
+                <!-- Empty object -->
+                <item />
+                <!-- Literal value "null" -->
+                <item>null</item>
+                <!-- Integer -->
+                <item>1</item>
+                <!-- Float -->
+                <item>1.0</item>
+            </data>
+        "#}],
+        want: Ok(value!(
+            {
+                "data": {
+                    "item": [
+                        true,
+                        false,
+                        "string!",
+                        {},
+                        null,
+                        1,
+                        1.0
+                    ]
+                }
+            }
+        ))
+    }
+
+    just_strings {
+        args: func_args![ value: indoc!{r#"
+            <?xml version="1.0" encoding="ISO-8859-1"?>
+            <!-- All scalar types are just strings -->
+            <data>
+                <item>true</item>
+                <item>false</item>
+                <item>string!</item>
+                <!-- Still an empty object -->
+                <item />
+                <item>null</item>
+                <item>1</item>
+                <item>1.0</item>
+            </data>
+        "#}, parse_null: false, parse_bool: false, parse_number: false],
+        want: Ok(value!(
+            {
+                "data": {
+                    "item": [
+                        "true",
+                        "false",
+                        "string!",
+                        {},
+                        "null",
+                        "1",
+                        "1.0"
+                    ]
+                }
+            }
+        ))
+    }
+
+    untrimmed {
+        args: func_args![ value: "<root>  <a>test</a>  </root>", trim: false ],
+        want: Ok(value!(
+            {
+                "root": {
+                    "a": "test",
+                    "text": ["  ", "  "],
+                }
+            }
+        ))
+    }
+
+    invalid_token {
+        args: func_args![ value: "true" ],
+        want: Err("unable to parse xml: unknown token at 1:1")
+    }
+}
+
+bench_function! {
     push => vrl_stdlib::Push;
 
     literal {
@@ -1162,19 +1671,25 @@ bench_function! {
     }
 }
 
-//bench_function! {
-//redact => vrl_stdlib::Redact;
+bench_function! {
+    redact => vrl_stdlib::Redact;
 
-//literal {
-//args: func_args![
-//value: "hello 1111222233334444",
-//filters: value!(["pattern"]),
-//patterns: value!(vec!(Regex::new(r"/[0-9]{16}/").unwrap())),
-//redactor: "full",
-//],
-//want: Ok("hello ****"),
-//}
-//}
+    regex {
+        args: func_args![
+            value: "hello 123456 world",
+            filters: vec![Regex::new(r"\d+").unwrap()],
+        ],
+        want: Ok("hello [REDACTED] world"),
+    }
+
+    us_social_security_number {
+        args: func_args![
+            value: "hello 123-12-1234 world",
+            filters: vec!["us_social_security_number"],
+        ],
+        want: Ok("hello [REDACTED] world"),
+    }
+}
 
 bench_function! {
     replace => vrl_stdlib::Replace;

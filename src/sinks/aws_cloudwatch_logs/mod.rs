@@ -1,7 +1,9 @@
 mod request;
 
 use crate::{
-    config::{log_schema, DataType, GenerateConfig, SinkConfig, SinkContext, SinkDescription},
+    config::{
+        log_schema, DataType, GenerateConfig, ProxyConfig, SinkConfig, SinkContext, SinkDescription,
+    },
     event::{Event, LogEvent, Value},
     internal_events::TemplateRenderingFailed,
     rusoto::{self, AwsAuthentication, RegionOrEndpoint},
@@ -16,7 +18,6 @@ use crate::{
 };
 use chrono::{Duration, Utc};
 use futures::{future::BoxFuture, ready, stream, FutureExt, SinkExt, StreamExt, TryFutureExt};
-use lazy_static::lazy_static;
 use rusoto_core::{request::BufferedHttpResponse, RusotoError};
 use rusoto_logs::{
     CloudWatchLogs, CloudWatchLogsClient, CreateLogGroupError, CreateLogStreamError,
@@ -106,12 +107,6 @@ fn default_config(e: Encoding) -> CloudwatchLogsSinkConfig {
     }
 }
 
-lazy_static! {
-    static ref REQUEST_DEFAULTS: TowerRequestConfig<Option<usize>> = TowerRequestConfig {
-        ..Default::default()
-    };
-}
-
 pub struct CloudwatchLogsSvc {
     client: CloudWatchLogsClient,
     stream_name: String,
@@ -160,10 +155,10 @@ pub enum CloudwatchError {
 }
 
 impl CloudwatchLogsSinkConfig {
-    fn create_client(&self) -> crate::Result<CloudWatchLogsClient> {
+    fn create_client(&self, proxy: &ProxyConfig) -> crate::Result<CloudWatchLogsClient> {
         let region = (&self.region).try_into()?;
 
-        let client = rusoto::client()?;
+        let client = rusoto::client(proxy)?;
         let creds = self.auth.build(&region, self.assume_role.clone())?;
 
         let client = rusoto_core::Client::new_with_encoding(creds, client, self.compression.into());
@@ -183,12 +178,12 @@ impl SinkConfig for CloudwatchLogsSinkConfig {
             .events(10_000)
             .timeout(1)
             .parse_config(self.batch)?;
-        let request = self.request.unwrap_with(&REQUEST_DEFAULTS);
+        let request = self.request.unwrap_with(&TowerRequestConfig::default());
 
         let log_group = self.group_name.clone();
         let log_stream = self.stream_name.clone();
 
-        let client = self.create_client()?;
+        let client = self.create_client(cx.proxy())?;
         let svc = ServiceBuilder::new()
             .concurrency_limit(request.concurrency.unwrap())
             .service(CloudwatchLogsPartitionSvc::new(
@@ -220,7 +215,7 @@ impl SinkConfig for CloudwatchLogsSinkConfig {
 
 impl CloudwatchLogsPartitionSvc {
     pub fn new(config: CloudwatchLogsSinkConfig, client: CloudWatchLogsClient) -> Self {
-        let request_settings = config.request.unwrap_with(&REQUEST_DEFAULTS);
+        let request_settings = config.request.unwrap_with(&TowerRequestConfig::default());
 
         Self {
             config,
@@ -496,11 +491,6 @@ async fn healthcheck(
     config: CloudwatchLogsSinkConfig,
     client: CloudWatchLogsClient,
 ) -> crate::Result<()> {
-    if config.group_name.is_dynamic() {
-        info!("Cloudwatch group_name is dynamic; skipping healthcheck.");
-        return Ok(());
-    }
-
     let group_name = config.group_name.get_ref().to_owned();
     let expected_group_name = group_name.clone();
 
@@ -529,7 +519,17 @@ async fn healthcheck(
                     Err(HealthcheckError::GroupNameError.into())
                 }
             }
-            None => Err(HealthcheckError::NoLogGroup.into()),
+            None => {
+                if config.group_name.is_dynamic() {
+                    info!("Skipping healthcheck log group check: `group_name` is dynamic.");
+                    Ok(())
+                } else if config.create_missing_group.unwrap_or(true) {
+                    info!("Skipping healthcheck log group check: `group_name` will be created if missing.");
+                    Ok(())
+                } else {
+                    Err(HealthcheckError::NoLogGroup.into())
+                }
+            }
         },
         Err(source) => Err(HealthcheckError::DescribeLogGroupsFailed { source }.into()),
     }
@@ -568,7 +568,7 @@ impl RetryLogic for CloudwatchRetryLogic {
                 }
 
                 RusotoError::Unknown(res)
-                    if rusoto_core::proto::json::Error::parse(&res)
+                    if rusoto_core::proto::json::Error::parse(res)
                         .filter(|error| error.typ.as_str() == "ThrottlingException")
                         .is_some() =>
                 {
@@ -790,7 +790,7 @@ mod tests {
             stream: "stream".into(),
             group: "group".into(),
         };
-        let client = config.create_client().unwrap();
+        let client = config.create_client(&ProxyConfig::from_env()).unwrap();
         CloudwatchLogsSvc::new(&config, &key, client)
     }
 
@@ -856,7 +856,7 @@ mod tests {
 mod integration_tests {
     use super::*;
     use crate::{
-        config::{SinkConfig, SinkContext},
+        config::{ProxyConfig, SinkConfig, SinkContext},
         rusoto::RegionOrEndpoint,
         test_util::{random_lines, random_lines_with_stream, random_string, trace_init},
     };
@@ -1260,7 +1260,7 @@ mod integration_tests {
             auth: Default::default(),
         };
 
-        let client = config.create_client().unwrap();
+        let client = config.create_client(&ProxyConfig::default()).unwrap();
         healthcheck(config, client).await.unwrap();
     }
 
@@ -1270,7 +1270,8 @@ mod integration_tests {
             endpoint: "http://localhost:6000".into(),
         };
 
-        let client = rusoto::client().unwrap();
+        let proxy = ProxyConfig::default();
+        let client = rusoto::client(&proxy).unwrap();
         let creds = rusoto::AwsCredentialsProvider::new(&region, None).unwrap();
         CloudWatchLogsClient::new_with(client, creds, region)
     }

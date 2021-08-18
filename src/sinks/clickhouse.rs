@@ -6,8 +6,7 @@ use crate::{
         encoding::{EncodingConfigWithDefault, EncodingConfiguration},
         http::{BatchedHttpSink, HttpRetryLogic, HttpSink},
         retries::{RetryAction, RetryLogic},
-        BatchConfig, BatchSettings, Buffer, Compression, EncodedEvent, TowerRequestConfig,
-        UriSerde,
+        sink, BatchConfig, BatchSettings, Buffer, Compression, TowerRequestConfig, UriSerde,
     },
     tls::{TlsOptions, TlsSettings},
 };
@@ -15,7 +14,6 @@ use bytes::Bytes;
 use futures::{FutureExt, SinkExt};
 use http::{Request, StatusCode, Uri};
 use hyper::Body;
-use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use snafu::ResultExt;
 
@@ -27,6 +25,8 @@ pub struct ClickhouseConfig {
     pub endpoint: UriSerde,
     pub table: String,
     pub database: Option<String>,
+    #[serde(default)]
+    pub skip_unknown_fields: bool,
     #[serde(default = "Compression::gzip_default")]
     pub compression: Compression,
     #[serde(
@@ -40,12 +40,6 @@ pub struct ClickhouseConfig {
     #[serde(default)]
     pub request: TowerRequestConfig,
     pub tls: Option<TlsOptions>,
-}
-
-lazy_static! {
-    static ref REQUEST_DEFAULTS: TowerRequestConfig = TowerRequestConfig {
-        ..Default::default()
-    };
 }
 
 inventory::submit! {
@@ -73,16 +67,16 @@ impl SinkConfig for ClickhouseConfig {
             .bytes(bytesize::mib(10u64))
             .timeout(1)
             .parse_config(self.batch)?;
-        let request = self.request.unwrap_with(&REQUEST_DEFAULTS);
+        let request = self.request.unwrap_with(&TowerRequestConfig::default());
         let tls_settings = TlsSettings::from_options(&self.tls)?;
-        let client = HttpClient::new(tls_settings)?;
+        let client = HttpClient::new(tls_settings, &cx.proxy)?;
 
         let config = ClickhouseConfig {
             auth: self.auth.choose_one(&self.endpoint.auth)?,
             ..self.clone()
         };
 
-        let sink = BatchedHttpSink::with_retry_logic(
+        let sink = BatchedHttpSink::with_logic(
             config.clone(),
             Buffer::new(batch.size, self.compression),
             ClickhouseRetryLogic::default(),
@@ -90,6 +84,7 @@ impl SinkConfig for ClickhouseConfig {
             batch.timeout,
             client.clone(),
             cx.acker(),
+            sink::StdServiceLogic::default(),
         )
         .sink_map_err(|error| error!(message = "Fatal clickhouse sink error.", %error));
 
@@ -112,14 +107,14 @@ impl HttpSink for ClickhouseConfig {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
 
-    fn encode_event(&self, mut event: Event) -> Option<EncodedEvent<Self::Input>> {
+    fn encode_event(&self, mut event: Event) -> Option<Self::Input> {
         self.encoding.apply_rules(&mut event);
         let log = event.into_log();
 
         let mut body = serde_json::to_vec(&log).expect("Events should be valid json!");
         body.push(b'\n');
 
-        Some(EncodedEvent::new(body).with_metadata(log))
+        Some(body)
     }
 
     async fn build_request(&self, events: Self::Output) -> crate::Result<http::Request<Vec<u8>>> {
@@ -129,8 +124,13 @@ impl HttpSink for ClickhouseConfig {
             "default"
         };
 
-        let uri =
-            set_uri_query(&self.endpoint.uri, database, &self.table).expect("Unable to encode uri");
+        let uri = set_uri_query(
+            &self.endpoint.uri,
+            database,
+            &self.table,
+            self.skip_unknown_fields,
+        )
+        .expect("Unable to encode uri");
 
         let mut builder = Request::post(&uri).header("Content-Type", "application/x-ndjson");
 
@@ -165,7 +165,7 @@ async fn healthcheck(client: HttpClient, config: ClickhouseConfig) -> crate::Res
     }
 }
 
-fn set_uri_query(uri: &Uri, database: &str, table: &str) -> crate::Result<Uri> {
+fn set_uri_query(uri: &Uri, database: &str, table: &str, skip_unknown: bool) -> crate::Result<Uri> {
     let query = url::form_urlencoded::Serializer::new(String::new())
         .append_pair(
             "query",
@@ -183,6 +183,9 @@ fn set_uri_query(uri: &Uri, database: &str, table: &str) -> crate::Result<Uri> {
         uri.push('/');
     }
     uri.push_str("?input_format_import_nested_json=1&");
+    if skip_unknown {
+        uri.push_str("input_format_skip_unknown_fields=1&");
+    }
     uri.push_str(query.as_str());
 
     uri.parse::<Uri>()
@@ -244,6 +247,7 @@ mod tests {
             &"http://localhost:80".parse().unwrap(),
             "my_database",
             "my_table",
+            false,
         )
         .unwrap();
         assert_eq!(uri.to_string(), "http://localhost:80/?input_format_import_nested_json=1&query=INSERT+INTO+%22my_database%22.%22my_table%22+FORMAT+JSONEachRow");
@@ -252,6 +256,7 @@ mod tests {
             &"http://localhost:80".parse().unwrap(),
             "my_database",
             "my_\"table\"",
+            false,
         )
         .unwrap();
         assert_eq!(uri.to_string(), "http://localhost:80/?input_format_import_nested_json=1&query=INSERT+INTO+%22my_database%22.%22my_%5C%22table%5C%22%22+FORMAT+JSONEachRow");
@@ -259,7 +264,13 @@ mod tests {
 
     #[test]
     fn encode_invalid() {
-        set_uri_query(&"localhost:80".parse().unwrap(), "my_database", "my_table").unwrap_err();
+        set_uri_query(
+            &"localhost:80".parse().unwrap(),
+            "my_database",
+            "my_table",
+            false,
+        )
+        .unwrap_err();
     }
 }
 
@@ -331,6 +342,53 @@ mod integration_tests {
         let output = client.select_all(&table).await;
         assert_eq!(1, output.rows);
 
+        let expected = serde_json::to_value(input_event.into_log()).unwrap();
+        assert_eq!(expected, output.data[0]);
+
+        assert_eq!(receiver.try_recv(), Ok(BatchStatus::Delivered));
+    }
+
+    #[tokio::test]
+    async fn skip_unknown_fields() {
+        trace_init();
+
+        let table = gen_table();
+        let host = String::from("http://localhost:8123");
+
+        let config = ClickhouseConfig {
+            endpoint: host.parse().unwrap(),
+            table: table.clone(),
+            skip_unknown_fields: true,
+            compression: Compression::None,
+            batch: BatchConfig {
+                max_events: Some(1),
+                ..Default::default()
+            },
+            request: TowerRequestConfig {
+                retry_attempts: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let client = ClickhouseClient::new(host);
+        client
+            .create_table(&table, "host String, timestamp String, message String")
+            .await;
+
+        let (sink, _hc) = config.build(SinkContext::new_test()).await.unwrap();
+
+        let (mut input_event, mut receiver) = make_event();
+        input_event.as_mut_log().insert("unknown", "mysteries");
+
+        sink.run(stream::once(ready(input_event.clone())))
+            .await
+            .unwrap();
+
+        let output = client.select_all(&table).await;
+        assert_eq!(1, output.rows);
+
+        input_event.as_mut_log().remove("unknown");
         let expected = serde_json::to_value(input_event.into_log()).unwrap();
         assert_eq!(expected, output.data[0]);
 

@@ -1,11 +1,14 @@
 #[cfg(feature = "api")]
 use super::api;
 use super::{
-    compiler, default_data_dir, provider, Config, GlobalOptions, HealthcheckOptions, SinkConfig,
-    SinkOuter, SourceConfig, TestDefinition, TransformConfig, TransformOuter,
+    compiler, provider, Config, HealthcheckOptions, SinkConfig, SinkOuter, SourceConfig,
+    SourceOuter, TestDefinition, TransformOuter,
 };
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use vector_core::config::GlobalOptions;
+use vector_core::default_data_dir;
+use vector_core::transform::TransformConfig;
 
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
@@ -18,7 +21,7 @@ pub struct ConfigBuilder {
     #[serde(default)]
     pub healthchecks: HealthcheckOptions,
     #[serde(default)]
-    pub sources: IndexMap<String, Box<dyn SourceConfig>>,
+    pub sources: IndexMap<String, SourceOuter>,
     #[serde(default)]
     pub sinks: IndexMap<String, SinkOuter>,
     #[serde(default)]
@@ -71,25 +74,25 @@ impl ConfigBuilder {
         compiler::compile(self)
     }
 
-    pub fn add_source<S: SourceConfig + 'static, T: Into<String>>(&mut self, name: T, source: S) {
-        self.sources.insert(name.into(), Box::new(source));
+    pub fn add_source<S: SourceConfig + 'static, T: Into<String>>(&mut self, id: T, source: S) {
+        self.sources.insert(id.into(), SourceOuter::new(source));
     }
 
     pub fn add_sink<S: SinkConfig + 'static, T: Into<String>>(
         &mut self,
-        name: T,
+        id: T,
         inputs: &[&str],
         sink: S,
     ) {
         let inputs = inputs.iter().map(|&s| s.to_owned()).collect::<Vec<_>>();
         let sink = SinkOuter::new(inputs, Box::new(sink));
 
-        self.sinks.insert(name.into(), sink);
+        self.sinks.insert(id.into(), sink);
     }
 
     pub fn add_transform<T: TransformConfig + 'static, S: Into<String>>(
         &mut self,
-        name: S,
+        id: S,
         inputs: &[&str],
         transform: T,
     ) {
@@ -99,7 +102,7 @@ impl ConfigBuilder {
             inputs,
         };
 
-        self.transforms.insert(name.into(), transform);
+        self.transforms.insert(id.into(), transform);
     }
 
     pub fn append(&mut self, with: Self) -> Result<(), Vec<String>> {
@@ -132,17 +135,17 @@ impl ConfigBuilder {
 
         with.sources.keys().for_each(|k| {
             if self.sources.contains_key(k) {
-                errors.push(format!("duplicate source name found: {}", k));
+                errors.push(format!("duplicate source id found: {}", k));
             }
         });
         with.sinks.keys().for_each(|k| {
             if self.sinks.contains_key(k) {
-                errors.push(format!("duplicate sink name found: {}", k));
+                errors.push(format!("duplicate sink id found: {}", k));
             }
         });
         with.transforms.keys().for_each(|k| {
             if self.transforms.contains_key(k) {
-                errors.push(format!("duplicate transform name found: {}", k));
+                errors.push(format!("duplicate transform id found: {}", k));
             }
         });
         with.tests.iter().for_each(|wt| {

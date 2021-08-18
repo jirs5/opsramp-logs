@@ -1,6 +1,6 @@
 use super::parser;
 use crate::{
-    config::{self, GenerateConfig, SourceConfig, SourceContext, SourceDescription},
+    config::{self, GenerateConfig, ProxyConfig, SourceConfig, SourceContext, SourceDescription},
     http::Auth,
     http::HttpClient,
     internal_events::{
@@ -35,9 +35,7 @@ struct PrometheusScrapeConfig {
     endpoints: Vec<String>,
     #[serde(default = "default_scrape_interval_secs")]
     scrape_interval_secs: u64,
-
     tls: Option<TlsOptions>,
-
     auth: Option<Auth>,
 }
 
@@ -79,6 +77,7 @@ impl SourceConfig for PrometheusScrapeConfig {
             urls,
             tls,
             self.auth.clone(),
+            cx.proxy.clone(),
             self.scrape_interval_secs,
             cx.shutdown,
             cx.out,
@@ -104,9 +103,7 @@ struct PrometheusCompatConfig {
     endpoints: Vec<String>,
     #[serde(default = "default_scrape_interval_secs")]
     scrape_interval_secs: u64,
-
     tls: Option<TlsOptions>,
-
     auth: Option<Auth>,
 }
 
@@ -138,6 +135,7 @@ fn prometheus(
     urls: Vec<http::Uri>,
     tls: TlsSettings,
     auth: Option<Auth>,
+    proxy: ProxyConfig,
     interval: u64,
     shutdown: ShutdownSignal,
     out: Pipeline,
@@ -149,7 +147,7 @@ fn prometheus(
         .map(move |_| stream::iter(urls.clone()))
         .flatten()
         .map(move |url| {
-            let client = HttpClient::new(tls.clone()).expect("Building HTTP client failed");
+            let client = HttpClient::new(tls.clone(), &proxy).expect("Building HTTP client failed");
 
             let mut request = Request::get(&url)
                 .body(Body::empty())
@@ -416,18 +414,18 @@ mod integration_tests {
 
         // Sample some well-known metrics
         let build = find_metric("prometheus_build_info");
-        assert!(matches!(build.data.kind, MetricKind::Absolute));
-        assert!(matches!(build.data.value, MetricValue::Gauge { .. }));
+        assert!(matches!(build.kind(), MetricKind::Absolute));
+        assert!(matches!(build.value(), &MetricValue::Gauge { .. }));
         assert!(build.tags().unwrap().contains_key("branch"));
         assert!(build.tags().unwrap().contains_key("version"));
 
         let queries = find_metric("prometheus_engine_queries");
-        assert!(matches!(queries.data.kind, MetricKind::Absolute));
-        assert!(matches!(queries.data.value, MetricValue::Gauge { .. }));
+        assert!(matches!(queries.kind(), MetricKind::Absolute));
+        assert!(matches!(queries.value(), &MetricValue::Gauge { .. }));
 
         let go_info = find_metric("go_info");
-        assert!(matches!(go_info.data.kind, MetricKind::Absolute));
-        assert!(matches!(go_info.data.value, MetricValue::Gauge { .. }));
+        assert!(matches!(go_info.kind(), MetricKind::Absolute));
+        assert!(matches!(go_info.value(), &MetricValue::Gauge { .. }));
         assert!(go_info.tags().unwrap().contains_key("version"));
     }
 }

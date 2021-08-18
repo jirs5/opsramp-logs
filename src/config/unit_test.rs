@@ -1,16 +1,14 @@
 use super::{Config, ConfigBuilder, TestDefinition, TestInput, TestInputValue};
-use crate::config::{self, GlobalOptions, TransformConfig};
+use crate::config::{self, ConfigPath, GlobalOptions, TransformConfig};
 use crate::{
     conditions::Condition,
     event::{Event, Value},
     transforms::Transform,
 };
 use indexmap::IndexMap;
-use std::{collections::HashMap, path::PathBuf};
+use std::collections::HashMap;
 
-pub async fn build_unit_tests_main(
-    paths: &[(PathBuf, config::FormatHint)],
-) -> Result<Vec<UnitTest>, Vec<String>> {
+pub async fn build_unit_tests_main(paths: &[ConfigPath]) -> Result<Vec<UnitTest>, Vec<String>> {
     config::init_log_schema(paths, false)?;
 
     let (config, _) = super::loading::load_builder_from_paths(paths)?;
@@ -1448,5 +1446,47 @@ mod tests {
           output: {"third_new_field":"also also a string value","second_new_field":"also a string value","message":"also this doesnt matter"}"#.to_owned(),
                     ]);
                 */
+    }
+
+    #[tokio::test]
+    async fn type_inconsistency_while_expanding_transform() {
+        let config: ConfigBuilder = toml::from_str(indoc! {r#"
+            [sources.input]
+              type = "generator"
+              format = "shuffle"
+              lines = ["one", "two"]
+              count = 5
+
+            [transforms.foo]
+              inputs = ["input"]
+              type = "compound"
+              [transforms.foo.nested.step1]
+                type = "log_to_metric"
+                [[transforms.foo.nested.step1.metrics]]
+                  type = "counter"
+                  field = "c"
+                  name = "sum"
+                  namespace = "ns"
+              [transforms.foo.nested.step2]
+                type = "log_to_metric"
+                [[transforms.foo.nested.step2.metrics]]
+                  type = "counter"
+                  field = "c"
+                  name = "sum"
+                  namespace = "ns"
+
+            [sinks.output]
+              type = "console"
+              inputs = [ "foo.step2" ]
+              encoding = "json"
+              target = "stdout"
+        "#})
+        .unwrap();
+
+        let err = crate::config::compiler::compile(config).err().unwrap();
+        assert_eq!(
+            err,
+            vec!["Data type mismatch between foo.step1 (Metric) and foo.step2 (Log)".to_owned()]
+        );
     }
 }

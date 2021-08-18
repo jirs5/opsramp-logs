@@ -125,6 +125,10 @@ impl Expression for DelFn {
     fn type_def(&self, _: &state::Compiler) -> TypeDef {
         TypeDef::new().unknown()
     }
+
+    fn update_state(&self, state: &mut state::Compiler) {
+        self.query.delete_type_def(state);
+    }
 }
 
 impl fmt::Display for DelFn {
@@ -136,7 +140,7 @@ impl fmt::Display for DelFn {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::btreemap;
+    use shared::{btreemap, TimeZone};
 
     #[test]
     fn del() {
@@ -184,10 +188,11 @@ mod tests {
                 DelFn::new(".exists[1]"),
             ),
         ];
+        let tz = TimeZone::default();
         for (object, exp, func) in cases {
             let mut object: Value = object.into();
             let mut runtime_state = vrl::state::Runtime::default();
-            let mut ctx = Context::new(&mut object, &mut runtime_state);
+            let mut ctx = Context::new(&mut object, &mut runtime_state, &tz);
             let got = func
                 .resolve(&mut ctx)
                 .map_err(|e| format!("{:#}", anyhow::anyhow!(e)));

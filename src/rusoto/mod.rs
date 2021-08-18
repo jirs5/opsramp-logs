@@ -1,3 +1,4 @@
+use crate::config::ProxyConfig;
 use crate::{http::HttpError, tls::MaybeTlsSettings};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -35,9 +36,9 @@ pub use region::{region_from_endpoint, RegionOrEndpoint};
 
 pub type Client = HttpClient<super::http::HttpClient<RusotoBody>>;
 
-pub fn client() -> crate::Result<Client> {
+pub fn client(proxy: &ProxyConfig) -> crate::Result<Client> {
     let settings = MaybeTlsSettings::enable_client()?;
-    let client = super::http::HttpClient::new(settings)?;
+    let client = super::http::HttpClient::new(settings, proxy)?;
     Ok(HttpClient { client })
 }
 
@@ -206,7 +207,7 @@ where
         let client = self.client.clone();
 
         Box::pin(async move {
-            let method = match request.method().as_ref() {
+            let method = match request.method() {
                 "POST" => Method::POST,
                 "PUT" => Method::PUT,
                 "DELETE" => Method::DELETE,

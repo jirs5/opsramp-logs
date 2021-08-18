@@ -1,7 +1,7 @@
+use crate::ByteSizeOf;
 use crate::{event::error::EventError, event::timestamp_to_string, Result};
 use bytes::{Bytes, BytesMut};
 use chrono::{DateTime, Utc};
-use derive_is_enum_variant::is_enum_variant;
 use lookup::{Field, FieldBuf, Lookup, LookupBuf, Segment, SegmentBuf};
 use serde::{Deserialize, Serialize, Serializer};
 use std::collections::BTreeMap;
@@ -10,7 +10,7 @@ use std::fmt::Debug;
 use std::iter::FromIterator;
 use toml::value::Value as TomlValue;
 
-#[derive(PartialEq, Debug, Clone, Deserialize, is_enum_variant)]
+#[derive(PartialEq, PartialOrd, Debug, Clone, Deserialize)]
 pub enum Value {
     Bytes(Bytes),
     Integer(i64),
@@ -20,6 +20,19 @@ pub enum Value {
     Map(BTreeMap<String, Value>),
     Array(Vec<Value>),
     Null,
+}
+
+impl ByteSizeOf for Value {
+    fn allocated_bytes(&self) -> usize {
+        match self {
+            Value::Bytes(bytes) => bytes.len(),
+            Value::Map(map) => map
+                .iter()
+                .fold(0, |acc, (k, v)| acc + k.len() + v.size_of()),
+            Value::Array(arr) => arr.iter().fold(0, |acc, v| acc + v.size_of()),
+            _ => 0,
+        }
+    }
 }
 
 impl Serialize for Value {
@@ -150,6 +163,9 @@ impl_valuekind_from_integer!(i64);
 impl_valuekind_from_integer!(i32);
 impl_valuekind_from_integer!(i16);
 impl_valuekind_from_integer!(i8);
+impl_valuekind_from_integer!(u32);
+impl_valuekind_from_integer!(u16);
+impl_valuekind_from_integer!(u8);
 impl_valuekind_from_integer!(isize);
 
 impl From<bool> for Value {
@@ -243,7 +259,7 @@ impl Value {
     // TODO: return Cow
     pub fn to_string_lossy(&self) -> String {
         match self {
-            Value::Bytes(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Value::Bytes(bytes) => String::from_utf8_lossy(bytes).into_owned(),
             Value::Timestamp(timestamp) => timestamp_to_string(timestamp),
             Value::Integer(num) => format!("{}", num),
             Value::Float(num) => format!("{}", num),
@@ -358,44 +374,6 @@ impl Value {
         }
     }
 
-    /// Lookup API methods
-    /// Return if the node is a leaf (meaning it has no children) or not.
-    ///
-    /// This is notably useful for things like influxdb logs where we list only leaves.
-    ///
-    /// ```rust
-    /// use vector_core::event::Value;
-    /// use std::collections::BTreeMap;
-    ///
-    /// let val = Value::from(1);
-    /// assert_eq!(val.is_leaf(), true);
-    ///
-    /// let mut val = Value::from(Vec::<Value>::default());
-    /// assert_eq!(val.is_leaf(), true);
-    /// val.insert(0, 1);
-    /// assert_eq!(val.is_leaf(), false);
-    /// val.insert(3, 1);
-    /// assert_eq!(val.is_leaf(), false);
-    ///
-    /// let mut val = Value::from(BTreeMap::default());
-    /// assert_eq!(val.is_leaf(), true);
-    /// val.insert("foo", 1);
-    /// assert_eq!(val.is_leaf(), false);
-    /// val.insert("bar", 2);
-    /// assert_eq!(val.is_leaf(), false);
-    /// ```
-    pub fn is_leaf(&self) -> bool {
-        match &self {
-            Value::Boolean(_)
-            | Value::Bytes(_)
-            | Value::Timestamp(_)
-            | Value::Float(_)
-            | Value::Integer(_)
-            | Value::Null => true,
-            Value::Map(_) | Value::Array(_) => self.is_empty(),
-        }
-    }
-
     /// Return if the node is empty, that is, it is an array or map with no items.
     ///
     /// ```rust
@@ -429,42 +407,6 @@ impl Value {
             Value::Null => true,
             Value::Map(v) => v.is_empty(),
             Value::Array(v) => v.is_empty(),
-        }
-    }
-
-    /// Return the number of subvalues the value has.
-    ///
-    /// ```rust
-    /// use vector_core::event::Value;
-    /// use std::collections::BTreeMap;
-    ///
-    /// let val = Value::from(1);
-    /// assert_eq!(val.len(), None);
-    ///
-    /// let mut val = Value::from(Vec::<Value>::default());
-    /// assert_eq!(val.len(), Some(0));
-    /// val.insert(0, 1);
-    /// assert_eq!(val.len(), Some(1));
-    /// val.insert(3, 1);
-    /// assert_eq!(val.len(), Some(4));
-    ///
-    /// let mut val = Value::from(BTreeMap::default());
-    /// assert_eq!(val.len(), Some(0));
-    /// val.insert("foo", 1);
-    /// assert_eq!(val.len(), Some(1));
-    /// val.insert("bar", 2);
-    /// assert_eq!(val.len(), Some(2));
-    /// ```
-    pub fn len(&self) -> Option<usize> {
-        match &self {
-            Value::Boolean(_)
-            | Value::Bytes(_)
-            | Value::Timestamp(_)
-            | Value::Float(_)
-            | Value::Integer(_)
-            | Value::Null => None,
-            Value::Map(v) => Some(v.len()),
-            Value::Array(v) => Some(v.len()),
         }
     }
 
@@ -524,7 +466,7 @@ impl Value {
         };
 
         map.entry(name.to_string())
-            .and_modify(|entry| Value::correct_type(entry, &next_segment))
+            .and_modify(|entry| Value::correct_type(entry, next_segment))
             .or_insert_with(|| {
                 // The entry this segment is referring to doesn't exist, so we must push the appropriate type
                 // into the value.
@@ -852,12 +794,12 @@ impl Value {
                 }
             }
             // Descend into a map
-            (Some(Segment::Field(Field { ref name, .. })), Value::Map(map)) => {
+            (Some(Segment::Field(Field { name, .. })), Value::Map(map)) => {
                 if working_lookup.is_empty() {
-                    Ok(map.remove(*name))
+                    Ok(map.remove(name))
                 } else {
                     let mut inner_is_empty = false;
-                    let retval = match map.get_mut(*name) {
+                    let retval = match map.get_mut(name) {
                         Some(inner) => {
                             let ret = inner.remove(working_lookup.clone(), prune);
                             if inner.is_empty() {
@@ -868,7 +810,7 @@ impl Value {
                         None => Ok(None),
                     };
                     if inner_is_empty && prune {
-                        map.remove(*name);
+                        map.remove(name);
                     }
                     retval
                 }
@@ -901,7 +843,7 @@ impl Value {
                         Some(inner) => {
                             let ret = inner.remove(working_lookup.clone(), prune);
                             if inner.is_empty() {
-                                inner_is_empty = true
+                                inner_is_empty = true;
                             }
                             ret
                         }
@@ -969,12 +911,10 @@ impl Value {
                 }
             }
             // Descend into a map
-            (Some(Segment::Field(Field { ref name, .. })), Value::Map(map)) => {
-                match map.get(*name) {
-                    Some(inner) => inner.get(working_lookup.clone()),
-                    None => Ok(None),
-                }
-            }
+            (Some(Segment::Field(Field { name, .. })), Value::Map(map)) => match map.get(name) {
+                Some(inner) => inner.get(working_lookup.clone()),
+                None => Ok(None),
+            },
             (Some(Segment::Index(_)), Value::Map(_)) => Ok(None),
             // Descend into an array
             (Some(Segment::Index(i)), Value::Array(array)) => {
@@ -1073,8 +1013,8 @@ impl Value {
                 }
             }
             // Descend into a map
-            (Some(Segment::Field(Field { ref name, .. })), Value::Map(map)) => {
-                match map.get_mut(*name) {
+            (Some(Segment::Field(Field { name, .. })), Value::Map(map)) => {
+                match map.get_mut(name) {
                     Some(inner) => inner.get_mut(working_lookup.clone()),
                     None => Ok(None),
                 }
@@ -1671,35 +1611,49 @@ mod test {
     fn json_value_to_vector_value_to_json_value() {
         const FIXTURE_ROOT: &str = "tests/data/fixtures/value";
 
-        std::fs::read_dir(FIXTURE_ROOT).unwrap().for_each(|type_dir| match type_dir {
-            Ok(type_name) => {
-                let path = type_name.path();
-                std::fs::read_dir(path).unwrap().for_each(|fixture_file| match fixture_file {
-                    Ok(fixture_file) => {
-                        let path = fixture_file.path();
-                        let buf = parse_artifact(&path).unwrap();
+        std::fs::read_dir(FIXTURE_ROOT)
+            .unwrap()
+            .for_each(|type_dir| match type_dir {
+                Ok(type_name) => {
+                    let path = type_name.path();
+                    std::fs::read_dir(path)
+                        .unwrap()
+                        .for_each(|fixture_file| match fixture_file {
+                            Ok(fixture_file) => {
+                                let path = fixture_file.path();
+                                let buf = parse_artifact(&path).unwrap();
 
-                        let serde_value: serde_json::Value = serde_json::from_slice(&*buf).unwrap();
-                        let vector_value = Value::from(serde_value);
+                                let serde_value: serde_json::Value =
+                                    serde_json::from_slice(&*buf).unwrap();
+                                let vector_value = Value::from(serde_value);
 
-                        // Validate type
-                        let expected_type = type_name.path().file_name().unwrap().to_string_lossy().to_string();
-                        assert!(match &*expected_type {
-                            "boolean" => vector_value.is_boolean(),
-                            "integer" => vector_value.is_integer(),
-                            "bytes" => vector_value.is_bytes(),
-                            "array" => vector_value.is_array(),
-                            "map" => vector_value.is_map(),
-                            "null" => vector_value.is_null(),
-                            _ => unreachable!("You need to add a new type handler here."),
-                        }, "Typecheck failure. Wanted {}, got {:?}.", expected_type, vector_value);
-
-                        let _value: serde_json::Value = vector_value.try_into().unwrap();
-                    },
-                    _ => panic!("This test should never read Err'ing test fixtures."),
-                });
-            },
-            _ => panic!("This test should never read Err'ing type folders."),
-        })
+                                // Validate type
+                                let expected_type = type_name
+                                    .path()
+                                    .file_name()
+                                    .unwrap()
+                                    .to_string_lossy()
+                                    .to_string();
+                                let is_match = match vector_value {
+                                    Value::Boolean(_) => expected_type.eq("boolean"),
+                                    Value::Integer(_) => expected_type.eq("integer"),
+                                    Value::Bytes(_) => expected_type.eq("bytes"),
+                                    Value::Array { .. } => expected_type.eq("array"),
+                                    Value::Map(_) => expected_type.eq("map"),
+                                    Value::Null => expected_type.eq("null"),
+                                    _ => unreachable!("You need to add a new type handler here."),
+                                };
+                                assert!(
+                                    is_match,
+                                    "Typecheck failure. Wanted {}, got {:?}.",
+                                    expected_type, vector_value
+                                );
+                                let _value: serde_json::Value = vector_value.try_into().unwrap();
+                            }
+                            _ => panic!("This test should never read Err'ing test fixtures."),
+                        });
+                }
+                _ => panic!("This test should never read Err'ing type folders."),
+            });
     }
 }

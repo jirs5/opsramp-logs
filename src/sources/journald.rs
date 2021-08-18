@@ -34,7 +34,6 @@ use tokio::{
     process::Command,
     time::sleep,
 };
-use tracing_futures::Instrument;
 
 const DEFAULT_BATCH_SIZE: usize = 16;
 
@@ -75,6 +74,7 @@ pub struct JournaldConfig {
     pub data_dir: Option<PathBuf>,
     pub batch_size: Option<usize>,
     pub journalctl_path: Option<PathBuf>,
+    pub journal_directory: Option<PathBuf>,
     /// Deprecated
     #[serde(default)]
     remap_priority: bool,
@@ -98,7 +98,7 @@ impl SourceConfig for JournaldConfig {
 
         let data_dir = cx
             .globals
-            .resolve_and_make_data_subdir(self.data_dir.as_ref(), &cx.name)?;
+            .resolve_and_make_data_subdir(self.data_dir.as_ref(), &cx.id)?;
 
         let include_units = match (!self.units.is_empty(), !self.include_units.is_empty()) {
             (true, true) => return Err(BuildError::BothUnitsAndIncludeUnits.into()),
@@ -109,9 +109,9 @@ impl SourceConfig for JournaldConfig {
             (false, _) => &self.include_units,
         };
 
-        let include_units: HashSet<String> = include_units.iter().map(|s| fixup_unit(&s)).collect();
+        let include_units: HashSet<String> = include_units.iter().map(|s| fixup_unit(s)).collect();
         let exclude_units: HashSet<String> =
-            self.exclude_units.iter().map(|s| fixup_unit(&s)).collect();
+            self.exclude_units.iter().map(|s| fixup_unit(s)).collect();
         if let Some(unit) = include_units
             .iter()
             .find(|unit| exclude_units.contains(&unit[..]))
@@ -130,9 +130,17 @@ impl SourceConfig for JournaldConfig {
 
         let batch_size = self.batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
         let current_boot_only = self.current_boot_only.unwrap_or(true);
+        let journal_dir = self.journal_directory.clone();
 
-        let start: StartJournalctlFn =
-            Box::new(move |cursor| start_journalctl(&journalctl_path, current_boot_only, cursor));
+        let start: StartJournalctlFn = Box::new(move |cursor| {
+            let mut command = create_command(
+                &journalctl_path,
+                journal_dir.as_ref(),
+                current_boot_only,
+                cursor,
+            );
+            start_journalctl(&mut command)
+        });
 
         Ok(Box::pin(
             JournaldSource {
@@ -143,8 +151,7 @@ impl SourceConfig for JournaldConfig {
                 remap_priority: self.remap_priority,
                 out: cx.out,
             }
-            .run_shutdown(cx.shutdown, start)
-            .instrument(info_span!("journald-server")),
+            .run_shutdown(cx.shutdown, start),
         ))
     }
 
@@ -339,28 +346,8 @@ type StartJournalctlFn = Box<
 type StopJournalctlFn = Box<dyn FnOnce() + Send>;
 
 fn start_journalctl(
-    path: &Path,
-    current_boot_only: bool,
-    cursor: &Option<String>,
+    command: &mut Command,
 ) -> crate::Result<(BoxStream<'static, io::Result<Bytes>>, StopJournalctlFn)> {
-    let mut command = Command::new(path);
-    command.stdout(Stdio::piped());
-    command.arg("--follow");
-    command.arg("--all");
-    command.arg("--show-cursor");
-    command.arg("--output=json");
-
-    if current_boot_only {
-        command.arg("--boot");
-    }
-
-    if let Some(cursor) = cursor {
-        command.arg(format!("--after-cursor={}", cursor));
-    } else {
-        // journalctl --follow only outputs a few lines without a starting point
-        command.arg("--since=2000-01-01");
-    }
-
     let mut child = command.spawn().context(JournalctlSpawn)?;
 
     let stream = FramedRead::new(
@@ -377,6 +364,37 @@ fn start_journalctl(
     Ok((stream, stop))
 }
 
+fn create_command(
+    path: &Path,
+    journal_dir: Option<&PathBuf>,
+    current_boot_only: bool,
+    cursor: &Option<String>,
+) -> Command {
+    let mut command = Command::new(path);
+    command.stdout(Stdio::piped());
+    command.arg("--follow");
+    command.arg("--all");
+    command.arg("--show-cursor");
+    command.arg("--output=json");
+
+    if let Some(dir) = journal_dir {
+        command.arg(format!("--directory={}", dir.display()));
+    }
+
+    if current_boot_only {
+        command.arg("--boot");
+    }
+
+    if let Some(cursor) = cursor {
+        command.arg(format!("--after-cursor={}", cursor));
+    } else {
+        // journalctl --follow only outputs a few lines without a starting point
+        command.arg("--since=2000-01-01");
+    }
+
+    command
+}
+
 fn create_event(record: Record) -> Event {
     let mut log = LogEvent::from_iter(record);
     // Convert some journald-specific field names into Vector standard ones.
@@ -391,7 +409,7 @@ fn create_event(record: Record) -> Event {
         .get(&*SOURCE_TIMESTAMP)
         .or_else(|| log.get(RECEIVED_TIMESTAMP))
     {
-        if let Ok(timestamp) = String::from_utf8_lossy(&timestamp).parse::<u64>() {
+        if let Ok(timestamp) = String::from_utf8_lossy(timestamp).parse::<u64>() {
             let timestamp = chrono::Utc.timestamp(
                 (timestamp / 1_000_000) as i64,
                 (timestamp % 1_000_000) as u32 * 1_000,
@@ -776,20 +794,45 @@ mod tests {
         let includes: HashSet<String> = vec!["one", "two"].into_iter().map(Into::into).collect();
         let excludes: HashSet<String> = vec!["foo", "bar"].into_iter().map(Into::into).collect();
 
-        assert_eq!(filter_unit(None, &empty, &empty), false);
-        assert_eq!(filter_unit(None, &includes, &empty), true);
-        assert_eq!(filter_unit(None, &empty, &excludes), false);
-        assert_eq!(filter_unit(None, &includes, &excludes), true);
+        assert!(!filter_unit(None, &empty, &empty));
+        assert!(filter_unit(None, &includes, &empty));
+        assert!(!filter_unit(None, &empty, &excludes));
+        assert!(filter_unit(None, &includes, &excludes));
         let one = String::from("one");
-        assert_eq!(filter_unit(Some(&one), &empty, &empty), false);
-        assert_eq!(filter_unit(Some(&one), &includes, &empty), false);
-        assert_eq!(filter_unit(Some(&one), &empty, &excludes), false);
-        assert_eq!(filter_unit(Some(&one), &includes, &excludes), false);
+        assert!(!filter_unit(Some(&one), &empty, &empty));
+        assert!(!filter_unit(Some(&one), &includes, &empty));
+        assert!(!filter_unit(Some(&one), &empty, &excludes));
+        assert!(!filter_unit(Some(&one), &includes, &excludes));
         let two = String::from("bar");
-        assert_eq!(filter_unit(Some(&two), &empty, &empty), false);
-        assert_eq!(filter_unit(Some(&two), &includes, &empty), true);
-        assert_eq!(filter_unit(Some(&two), &empty, &excludes), true);
-        assert_eq!(filter_unit(Some(&two), &includes, &excludes), true);
+        assert!(!filter_unit(Some(&two), &empty, &empty));
+        assert!(filter_unit(Some(&two), &includes, &empty));
+        assert!(filter_unit(Some(&two), &empty, &excludes));
+        assert!(filter_unit(Some(&two), &includes, &excludes));
+    }
+
+    #[test]
+    fn command_options() {
+        let path = PathBuf::from("jornalctl");
+
+        let journal_dir = None;
+        let current_boot_only = false;
+        let cursor = None;
+
+        let command = create_command(&path, journal_dir, current_boot_only, &cursor);
+        let cmd_line = format!("{:?}", command);
+        assert!(!cmd_line.contains("--directory="));
+        assert!(!cmd_line.contains("--boot"));
+        assert!(cmd_line.contains("--since=2000-01-01"));
+
+        let journal_dir = Some(PathBuf::from("/tmp/journal-dir"));
+        let current_boot_only = true;
+        let cursor = Some(String::from("2021-01-01"));
+
+        let command = create_command(&path, journal_dir.as_ref(), current_boot_only, &cursor);
+        let cmd_line = format!("{:?}", command);
+        assert!(cmd_line.contains("--directory=/tmp/journal-dir"));
+        assert!(cmd_line.contains("--boot"));
+        assert!(cmd_line.contains("--after-cursor="));
     }
 
     fn message(event: &Event) -> Value {

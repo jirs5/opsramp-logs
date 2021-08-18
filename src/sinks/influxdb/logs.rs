@@ -11,7 +11,7 @@ use crate::{
             encode_namespace,
             encoding::{EncodingConfig, EncodingConfigWithDefault, EncodingConfiguration},
             http::{BatchedHttpSink, HttpSink},
-            BatchConfig, BatchSettings, Buffer, Compression, EncodedEvent, TowerRequestConfig,
+            BatchConfig, BatchSettings, Buffer, Compression, TowerRequestConfig,
         },
         Healthcheck, VectorSink,
     },
@@ -20,7 +20,6 @@ use crate::{
 use futures::SinkExt;
 use http::{Request, Uri};
 use indoc::indoc;
-use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -55,13 +54,6 @@ struct InfluxDbLogsSink {
     namespace: String,
     tags: HashSet<String>,
     encoding: EncodingConfig<Encoding>,
-}
-
-lazy_static! {
-    static ref REQUEST_DEFAULTS: TowerRequestConfig = TowerRequestConfig {
-        retry_attempts: Some(5),
-        ..Default::default()
-    };
 }
 
 #[derive(Deserialize, Serialize, Debug, Eq, PartialEq, Clone, Derivative)]
@@ -99,14 +91,17 @@ impl SinkConfig for InfluxDbLogsConfig {
         tags.insert(log_schema().source_type_key().to_string());
 
         let tls_settings = TlsSettings::from_options(&self.tls)?;
-        let client = HttpClient::new(tls_settings)?;
+        let client = HttpClient::new(tls_settings, cx.proxy())?;
         let healthcheck = self.healthcheck(client.clone())?;
 
         let batch = BatchSettings::default()
             .bytes(bytesize::mib(1u64))
             .timeout(1)
             .parse_config(self.batch)?;
-        let request = self.request.unwrap_with(&REQUEST_DEFAULTS);
+        let request = self.request.unwrap_with(&TowerRequestConfig {
+            retry_attempts: Some(5),
+            ..Default::default()
+        });
 
         let settings = influxdb_settings(
             self.influxdb1_settings.clone(),
@@ -157,7 +152,7 @@ impl HttpSink for InfluxDbLogsSink {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
 
-    fn encode_event(&self, mut event: Event) -> Option<EncodedEvent<Self::Input>> {
+    fn encode_event(&self, mut event: Event) -> Option<Self::Input> {
         self.encoding.apply_rules(&mut event);
         let mut event = event.into_log();
 
@@ -182,7 +177,7 @@ impl HttpSink for InfluxDbLogsSink {
             if self.tags.contains(&key) {
                 tags.insert(key, value.to_string_lossy());
             } else {
-                fields.insert(key, to_field(&value));
+                fields.insert(key, to_field(value));
             }
         });
 
@@ -200,7 +195,7 @@ impl HttpSink for InfluxDbLogsSink {
             return None;
         };
 
-        Some(EncodedEvent::new(output.into_bytes()).with_metadata(event))
+        Some(output.into_bytes())
     }
 
     async fn build_request(&self, events: Self::Output) -> crate::Result<Request<Vec<u8>>> {
@@ -270,7 +265,7 @@ mod tests {
             token = "my-token"
         "#};
 
-        toml::from_str::<InfluxDbLogsConfig>(&config).unwrap();
+        toml::from_str::<InfluxDbLogsConfig>(config).unwrap();
     }
 
     #[test]
@@ -288,10 +283,10 @@ mod tests {
         );
         sink.encoding.except_fields = Some(vec!["host".into()]);
 
-        let bytes = sink.encode_event(event).unwrap().item;
+        let bytes = sink.encode_event(event).unwrap();
         let string = std::str::from_utf8(&bytes).unwrap();
 
-        let line_protocol = split_line_protocol(&string);
+        let line_protocol = split_line_protocol(string);
         assert_eq!("ns.vector", line_protocol.0);
         assert_eq!("metric_type=logs", line_protocol.1);
         assert_fields(line_protocol.2.to_string(), ["message=\"hello\""].to_vec());
@@ -318,10 +313,10 @@ mod tests {
             ["source_type", "host"].to_vec(),
         );
 
-        let bytes = sink.encode_event(event).unwrap().item;
+        let bytes = sink.encode_event(event).unwrap();
         let string = std::str::from_utf8(&bytes).unwrap();
 
-        let line_protocol = split_line_protocol(&string);
+        let line_protocol = split_line_protocol(string);
         assert_eq!("ns.vector", line_protocol.0);
         assert_eq!(
             "host=aws.cloud.eur,metric_type=logs,source_type=file",
@@ -362,10 +357,10 @@ mod tests {
             ["source_type", "host"].to_vec(),
         );
 
-        let bytes = sink.encode_event(event).unwrap().item;
+        let bytes = sink.encode_event(event).unwrap();
         let string = std::str::from_utf8(&bytes).unwrap();
 
-        let line_protocol = split_line_protocol(&string);
+        let line_protocol = split_line_protocol(string);
         assert_eq!("ns.vector", line_protocol.0);
         assert_eq!(
             "host=aws.cloud.eur,metric_type=logs,source_type=file",
@@ -401,10 +396,10 @@ mod tests {
             [].to_vec(),
         );
 
-        let bytes = sink.encode_event(event).unwrap().item;
+        let bytes = sink.encode_event(event).unwrap();
         let string = std::str::from_utf8(&bytes).unwrap();
 
-        let line_protocol = split_line_protocol(&string);
+        let line_protocol = split_line_protocol(string);
         assert_eq!("ns.vector", line_protocol.0);
         assert_eq!("metric_type=logs", line_protocol.1);
         assert_fields(
@@ -438,10 +433,10 @@ mod tests {
             [].to_vec(),
         );
 
-        let bytes = sink.encode_event(event).unwrap().item;
+        let bytes = sink.encode_event(event).unwrap();
         let string = std::str::from_utf8(&bytes).unwrap();
 
-        let line_protocol = split_line_protocol(&string);
+        let line_protocol = split_line_protocol(string);
         assert_eq!("ns.vector", line_protocol.0);
         assert_eq!("metric_type=logs", line_protocol.1);
         assert_fields(
@@ -475,10 +470,10 @@ mod tests {
             ["as_a_tag", "not_exists_field", "source_type"].to_vec(),
         );
 
-        let bytes = sink.encode_event(event).unwrap().item;
+        let bytes = sink.encode_event(event).unwrap();
         let string = std::str::from_utf8(&bytes).unwrap();
 
-        let line_protocol = split_line_protocol(&string);
+        let line_protocol = split_line_protocol(string);
         assert_eq!("ns.vector", line_protocol.0);
         assert_eq!(
             "as_a_tag=10,metric_type=logs,source_type=file",

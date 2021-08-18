@@ -44,7 +44,7 @@ impl<T: EncodedLength> Batch for VecBuffer<T> {
     fn push(&mut self, item: Self::Input) -> PushResult<Self::Input> {
         let new_bytes = self.bytes + item.encoded_length();
         if self.is_empty() && item.encoded_length() > self.settings.bytes {
-            err_event_too_large(item.encoded_length())
+            err_event_too_large(item.encoded_length(), self.settings.bytes)
         } else if self.num_items() >= self.settings.events || new_bytes > self.settings.bytes {
             PushResult::Overflow(item)
         } else {
@@ -96,19 +96,19 @@ mod tests {
         let mut buffer = VecBuffer::new(settings);
         let data = "dummy".to_string();
 
-        assert_eq!(buffer.is_empty(), true);
+        assert!(buffer.is_empty());
         assert_eq!(buffer.num_items(), 0);
 
         assert_eq!(buffer.push(data.clone()), PushResult::Ok(false));
-        assert_eq!(buffer.is_empty(), false);
+        assert!(!buffer.is_empty());
         assert_eq!(buffer.num_items(), 1);
 
         assert_eq!(buffer.push(data.clone()), PushResult::Ok(true));
-        assert_eq!(buffer.is_empty(), false);
+        assert!(!buffer.is_empty());
         assert_eq!(buffer.num_items(), 2);
 
         assert_eq!(buffer.push(data.clone()), PushResult::Overflow(data));
-        assert_eq!(buffer.is_empty(), false);
+        assert!(!buffer.is_empty());
         assert_eq!(buffer.num_items(), 2);
 
         assert_eq!(buffer.finish().len(), 2);
@@ -120,26 +120,26 @@ mod tests {
         let mut buffer = VecBuffer::new(settings);
         let data = "some bytes".to_string();
 
-        assert_eq!(buffer.is_empty(), true);
+        assert!(buffer.is_empty());
         assert_eq!(buffer.num_items(), 0);
 
         assert_eq!(
             buffer.push("this record is just too long to be inserted".into()),
             PushResult::Ok(false)
         );
-        assert_eq!(buffer.is_empty(), true);
+        assert!(buffer.is_empty());
         assert_eq!(buffer.num_items(), 0);
 
         assert_eq!(buffer.push(data.clone()), PushResult::Ok(false));
-        assert_eq!(buffer.is_empty(), false);
+        assert!(!buffer.is_empty());
         assert_eq!(buffer.num_items(), 1);
 
         assert_eq!(buffer.push(data.clone()), PushResult::Ok(true));
-        assert_eq!(buffer.is_empty(), false);
+        assert!(!buffer.is_empty());
         assert_eq!(buffer.num_items(), 2);
 
         assert_eq!(buffer.push(data.clone()), PushResult::Overflow(data));
-        assert_eq!(buffer.is_empty(), false);
+        assert!(!buffer.is_empty());
         assert_eq!(buffer.num_items(), 2);
 
         assert_eq!(buffer.finish().len(), 2);
