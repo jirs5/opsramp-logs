@@ -7,7 +7,9 @@
 //! phase. There must be at least one valid set of labels.
 
 use crate::{
-    config::{log_schema, DataType, GenerateConfig, SinkConfig, SinkContext, SinkDescription},
+    config::{
+        log_schema, DataType, GenerateConfig, ProxyConfig, SinkConfig, SinkContext, SinkDescription,
+    },
     event::{self, Event, Value},
     http::{Auth, HttpClient, MaybeAuth},
     sinks::util::{
@@ -17,8 +19,8 @@ use crate::{
         encoding::{EncodingConfig, EncodingConfiguration},
         http::{HttpSink, PartitionHttpSink},
         service::ConcurrencyOption,
-        BatchConfig, BatchSettings, EncodedEvent, PartitionBuffer, PartitionInnerBuffer,
-        TowerRequestConfig, UriSerde,
+        BatchConfig, BatchSettings, PartitionBuffer, PartitionInnerBuffer, TowerRequestConfig,
+        UriSerde,
     },
     template::Template,
     tls::{TlsOptions, TlsSettings},
@@ -26,9 +28,9 @@ use crate::{
 use futures::{FutureExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
 use std::sync::{Arc, RwLock};
 use std::thread;
-use std::fs;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -66,6 +68,7 @@ pub struct OpsRampConfig {
     batch: BatchConfig,
 
     tls: Option<TlsOptions>,
+    proxy: Option<ProxyConfig>,
 }
 
 #[derive(Clone, Debug, Derivative, Deserialize, Serialize)]
@@ -122,10 +125,11 @@ impl SinkConfig for OpsRampConfig {
             .timeout(1)
             .parse_config(self.batch)?;
         let tls = TlsSettings::from_options(&self.tls)?;
-        let client = HttpClient::new(tls)?;
+        let client = HttpClient::new(tls, cx.proxy())?;
 
         let config = OpsRampConfig {
             auth: self.auth.choose_one(&self.endpoint.auth)?,
+            proxy: Option::from(cx.proxy().clone()),
             ..self.clone()
         };
 
@@ -177,6 +181,7 @@ struct OpsRampSink {
     pub gclient_key: Arc<RwLock<String>>,
     pub gclient_secret: Arc<RwLock<String>>,
     tls: Option<TlsOptions>,
+    proxy: Option<ProxyConfig>,
 }
 
 impl OpsRampSink {
@@ -196,14 +201,15 @@ impl OpsRampSink {
             renewal_timer_set: Arc::new(RwLock::new(false)),
             //tls: config.tls(verify_certificate:false),
             tls: config.tls,
+            proxy: config.proxy,
         }
     }
 
-    pub fn spawn_renewal_token(&self, ex_secs:u64) {
+    pub fn spawn_renewal_token(&self, ex_secs: u64) {
         println!("spawn_renewal_token Triggered");
         let this = self.clone();
         let period = ex_secs;
-        thread::spawn( move | | {
+        thread::spawn(move || {
             let this = this.clone();
             println!("Token renewal after secs-- {}", period);
             thread::sleep(std::time::Duration::from_secs(period));
@@ -211,32 +217,45 @@ impl OpsRampSink {
             *this.gaccess_token.write().unwrap() = "".to_string();
         });
     }
-
 }
 
-pub fn keysecret_replacement(key:String,secret:String) -> Result<(), Box<std::error::Error>> {
+pub fn keysecret_replacement(
+    key: String,
+    secret: String,
+) -> Result<(), Box<dyn std::error::Error>> {
     let yaml_content = fs::read_to_string("/opt/opsramp/agent/conf/log/log-config.yaml");
-    if yaml_content.is_ok(){
-        let replaced_yaml_content = yaml_content.unwrap().replace(&key, "<ENCRYPTED_KEY>").replace(&secret, "<ENCRYPTED_SECRET>");
-        fs::write("/opt/opsramp/agent/conf/log/log-config.yaml",replaced_yaml_content);
+    if yaml_content.is_ok() {
+        let replaced_yaml_content = yaml_content
+            .unwrap()
+            .replace(&key, "<ENCRYPTED_KEY>")
+            .replace(&secret, "<ENCRYPTED_SECRET>");
+        fs::write(
+            "/opt/opsramp/agent/conf/log/log-config.yaml",
+            replaced_yaml_content,
+        );
     }
 
     let logd_yaml_content = fs::read_to_string("/opt/opsramp/agent/conf/log.d/log-config.yaml");
-    if logd_yaml_content.is_ok(){
-        let logd_replaced_yaml_content = logd_yaml_content.unwrap().replace(&key, "<ENCRYPTED_KEY>").replace(&secret, "<ENCRYPTED_SECRET>");
-        fs::write("/opt/opsramp/agent/conf/log.d/log-config.yaml",logd_replaced_yaml_content);
+    if logd_yaml_content.is_ok() {
+        let logd_replaced_yaml_content = logd_yaml_content
+            .unwrap()
+            .replace(&key, "<ENCRYPTED_KEY>")
+            .replace(&secret, "<ENCRYPTED_SECRET>");
+        fs::write(
+            "/opt/opsramp/agent/conf/log.d/log-config.yaml",
+            logd_replaced_yaml_content,
+        );
     }
 
     Ok(())
 }
-
 
 #[async_trait::async_trait]
 impl HttpSink for OpsRampSink {
     type Input = PartitionInnerBuffer<OpsRampRecord, PartitionKey>;
     type Output = PartitionInnerBuffer<serde_json::Value, PartitionKey>;
 
-    fn encode_event(&self, mut event: Event) -> Option<EncodedEvent<Self::Input>> {
+    fn encode_event(&self, mut event: Event) -> Option<Self::Input> {
         let tenant_id = self.tenant_id.as_ref().and_then(|t| {
             t.render_string(&event)
                 .map_err(|missing| {
@@ -280,11 +299,11 @@ impl HttpSink for OpsRampSink {
             client_secret,
         };
 
-        if self.gclient_key.read().unwrap().to_string().is_empty(){
+        if self.gclient_key.read().unwrap().to_string().is_empty() {
             *self.gclient_key.write().unwrap() = ckey.clone();
-            *self.gclient_secret.write().unwrap()= csecret.clone();
+            *self.gclient_secret.write().unwrap() = csecret.clone();
             println!("Calling key replacement");
-            keysecret_replacement(ckey,csecret);
+            keysecret_replacement(ckey, csecret);
         }
 
         let mut labels = Vec::new();
@@ -335,26 +354,22 @@ impl HttpSink for OpsRampSink {
         }
 
         let event = OpsRampEvent { timestamp, event };
-        Some(
-            EncodedEvent::new(PartitionInnerBuffer::new(
-                OpsRampRecord {
-                    labels,
-                    event,
-                    partition: key.clone(),
-                },
-                key,
-            ))
-            .with_metadata(log),
-        )
+        Some(PartitionInnerBuffer::new(
+            OpsRampRecord {
+                labels,
+                event,
+                partition: key.clone(),
+            },
+            key,
+        ))
     }
 
-
-    async fn build_request(& self, output: Self::Output) -> crate::Result<http::Request<Vec<u8>>> {
+    async fn build_request(&self, output: Self::Output) -> crate::Result<http::Request<Vec<u8>>> {
         let (json, key) = output.into_parts();
         let tenant_id = key.tenant_id;
 
         let body = serde_json::to_vec(&json).unwrap();
-        let mut access_token:String;
+        let mut access_token: String;
         access_token = self.gaccess_token.read().unwrap().to_string();
 
         if access_token.is_empty() {
@@ -376,7 +391,11 @@ impl HttpSink for OpsRampSink {
 
             let tls = TlsSettings::from_options(&self.tls)?;
 
-            let client: HttpClient = HttpClient::new(tls)?;
+            println!("Using Proxy {:#?}",self.proxy);
+
+            let proxy = self.proxy.clone().unwrap_or_default();
+            let client: HttpClient = HttpClient::new(tls, &proxy)?;
+
             let opsramp_auth_res = client.send(opsramp_auth_req).await?;
             if opsramp_auth_res.status() != http::StatusCode::OK {
                 return Err(format!(
@@ -395,22 +414,19 @@ impl HttpSink for OpsRampSink {
                 let exp_secs = p.expires_in;
 
                 // Start timer to renew access token here
-				let timer_set:bool;
+                let timer_set: bool;
                 timer_set = *self.renewal_timer_set.read().unwrap();
 
-				if !timer_set {
-					*self.renewal_timer_set.write().unwrap() = true;
-                    println!("Setting Renewal timer {}",exp_secs);
+                if !timer_set {
+                    *self.renewal_timer_set.write().unwrap() = true;
+                    println!("Setting Renewal timer {}", exp_secs);
                     self.spawn_renewal_token(exp_secs);
-				}
+                }
 
                 //TO-DO Hide below log once tested
-                println!(
-                    "access_token saved:{}",
-                        access_token
-                    );
+                println!("access_token saved:{}", access_token);
             }
-        }else{
+        } else {
             //println!("Using saved Acess token : {} ",access_token);
             println!("Using saved Access token");
         }
@@ -592,7 +608,7 @@ mod tests {
         tokio::spawn(server);
 
         let tls = TlsSettings::from_options(&config.tls).expect("could not create TLS settings");
-        let client = HttpClient::new(tls).expect("could not cerate HTTP client");
+        let client = HttpClient::new(tls, _cx.proxy()).expect("could not cerate HTTP client");
 
         healthcheck(config.clone(), client)
             .await

@@ -171,7 +171,7 @@ impl Batch for OpsRampBuffer {
         let event_len = event.encoded.get().len();
 
         if self.is_empty() && WRAPPER_OVERHEAD + labels_len + event_len > self.settings.bytes {
-            err_event_too_large(WRAPPER_OVERHEAD + labels_len + event_len)
+            err_event_too_large(WRAPPER_OVERHEAD + labels_len + event_len, self.settings.bytes)
         } else if self.num_items >= self.settings.events
             || self.num_bytes + event_len + 1 > self.settings.bytes
         {
@@ -241,7 +241,7 @@ impl Batch for OpsRampBuffer {
 
         // This is just to guarantee stable key ordering for tests
         #[cfg(test)]
-        let streams_json = {
+            let streams_json = {
             let mut streams_json = streams_json;
             streams_json.sort_unstable_by_key(|s| s.0.to_string());
             streams_json
