@@ -31,6 +31,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, RwLock};
 use std::thread;
+use base64;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -98,7 +99,7 @@ impl GenerateConfig for OpsRampConfig {
             encoding = "json"
             labels = {}"#,
         )
-        .unwrap()
+            .unwrap()
     }
 }
 
@@ -147,7 +148,7 @@ impl SinkConfig for OpsRampConfig {
             client.clone(),
             cx.acker(),
         )
-        .sink_map_err(|error| error!(message = "Fatal opsramp sink error.", %error));
+            .sink_map_err(|error| error!(message = "Fatal opsramp sink error.", %error));
 
         let healthcheck = healthcheck(config, client).boxed();
 
@@ -372,6 +373,11 @@ impl HttpSink for OpsRampSink {
         let mut access_token: String;
         access_token = self.gaccess_token.read().unwrap().to_string();
 
+        let proxy = self.proxy.clone().unwrap_or_default();
+
+        let proxy_username = proxy.username.clone().unwrap_or_default();
+        let proxy_password = proxy.password.clone().unwrap_or_default();
+
         if access_token.is_empty() {
             println!("Fetching access token as it is empty.. ");
             let client_key = self.gclient_key.read().unwrap().to_string();
@@ -383,17 +389,19 @@ impl HttpSink for OpsRampSink {
                 client_key, client_secret
             );
 
-            let opsramp_auth_req = http::Request::post(opsramp_auth_uri)
+            let mut builder = http::Request::post(opsramp_auth_uri)
                 .header("Content-Type", "application/x-www-form-urlencoded")
-                .header("Accept", "application/json")
-                .body(hyper::Body::from(opsramp_auth_body))
-                .unwrap();
+                .header("Accept", "application/json");
+            if proxy_username != "" && proxy_password != "" {
+                let proxy_auth_base64 = base64::encode(format!("{}:{}", proxy_username.clone(), proxy_password.clone()));
+                builder = builder.header("Proxy-Authorization", format!("Basic {}", proxy_auth_base64));
+            }
+            let opsramp_auth_req = builder.body(hyper::Body::from(opsramp_auth_body)).unwrap();
 
             let tls = TlsSettings::from_options(&self.tls)?;
 
-            println!("Using Proxy {:#?}",self.proxy);
+            println!("Using Proxy {:?}", self.proxy);
 
-            let proxy = self.proxy.clone().unwrap_or_default();
             let client: HttpClient = HttpClient::new(tls, &proxy)?;
 
             let opsramp_auth_res = client.send(opsramp_auth_req).await?;
@@ -402,7 +410,7 @@ impl HttpSink for OpsRampSink {
                     "A non-successful status returned: {}",
                     opsramp_auth_res.status()
                 )
-                .into());
+                    .into());
             } else {
                 let body = opsramp_auth_res.into_parts();
                 let body_bytes = hyper::body::to_bytes(body.1).await?;
@@ -442,6 +450,10 @@ impl HttpSink for OpsRampSink {
 
         if let Some(tenant_id) = tenant_id {
             req = req.header("X-Scope-OrgID", tenant_id);
+        }
+        if proxy_username != "" && proxy_password != "" {
+            let proxy_auth_base64 = base64::encode(format!("{}:{}", proxy_username.clone(), proxy_password.clone()));
+            req = req.header("Proxy-Authorization", format!("Basic {}", proxy_auth_base64));
         }
 
         let mut req = req.body(body).unwrap();
@@ -524,7 +536,7 @@ mod tests {
             remove_label_fields = true
         "#,
         )
-        .unwrap();
+            .unwrap();
         let sink = OpsRampSink::new(config);
 
         let mut e1 = Event::from("hello world");
@@ -540,7 +552,7 @@ mod tests {
         let expected_line = serde_json::to_string(&serde_json::json!({
             "message": "hello world",
         }))
-        .unwrap();
+            .unwrap();
 
         assert_eq!(record.event.event, expected_line);
 
@@ -563,7 +575,7 @@ mod tests {
             encoding.except_fields = ["foo"]
         "#,
         )
-        .unwrap();
+            .unwrap();
         let sink = OpsRampSink::new(config);
 
         let mut e1 = Event::from("hello world");
@@ -575,7 +587,7 @@ mod tests {
         let expected_line = serde_json::to_string(&serde_json::json!({
             "message": "hello world",
         }))
-        .unwrap();
+            .unwrap();
 
         assert_eq!(record.event.event, expected_line);
 
@@ -594,7 +606,7 @@ mod tests {
 			auth.password = "some_password"
         "#,
         )
-        .unwrap();
+            .unwrap();
 
         let addr = test_util::next_addr();
         let endpoint = format!("http://{}", addr);
@@ -728,7 +740,7 @@ mod integration_tests {
             tenant_id = "default"
         "#,
         )
-        .unwrap();
+            .unwrap();
 
         let (sink, _) = config.build(cx).await.unwrap();
 
@@ -784,7 +796,7 @@ mod integration_tests {
             tenant_id = "{{ tenant_id }}"
         "#,
         )
-        .unwrap();
+            .unwrap();
 
         let test_name = config.labels.get_mut("test_name").unwrap();
         assert_eq!(test_name.get_ref(), &Bytes::from("placeholder"));
@@ -898,7 +910,7 @@ mod integration_tests {
             events,
             expected,
         )
-        .await;
+            .await;
     }
 
     async fn test_out_of_order_events(
@@ -918,7 +930,7 @@ mod integration_tests {
             tenant_id = "default"
         "#,
         )
-        .unwrap();
+            .unwrap();
         config.out_of_order_action = action;
         config.labels.insert(
             "test_name".to_owned(),

@@ -51,6 +51,10 @@ pub struct ProxyConfig {
         skip_serializing_if = "crate::serde::skip_serializing_if_default"
     )]
     pub no_proxy: NoProxy,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 impl Default for ProxyConfig {
@@ -60,6 +64,8 @@ impl Default for ProxyConfig {
             http: None,
             https: None,
             no_proxy: NoProxy::default(),
+            username: None,
+            password: None,
         }
     }
 }
@@ -75,6 +81,8 @@ impl ProxyConfig {
             http: from_env("HTTP_PROXY"),
             https: from_env("HTTPS_PROXY"),
             no_proxy: from_env("NO_PROXY").map(NoProxy::from).unwrap_or_default(),
+            username: None,
+            password: None,
         }
     }
 
@@ -101,6 +109,8 @@ impl ProxyConfig {
             http: other.http.clone().or_else(|| self.http.clone()),
             https: other.https.clone().or_else(|| self.https.clone()),
             no_proxy,
+            username: other.username.clone().or_else(|| self.username.clone()),
+            password: other.password.clone().or_else(|| self.password.clone()),
         }
     }
 
