@@ -147,20 +147,30 @@ impl SinkConfig for OpsRampConfig {
             Err(..) => self.client_secret.clone(),
         };
 
-        let proxy_http = env::var("PROXY_HTTP").unwrap_or_default();
-        let proxy_https = env::var("PROXY_HTTPS").unwrap_or_default();
+        let proxy_protocol = env::var("PROXY_PROTO").unwrap_or_default();
+        let proxy_url = env::var("PROXY_URL").unwrap_or_default();
         let proxy_username = env::var("PROXY_USERNAME").unwrap_or_default();
         let proxy_password = env::var("PROXY_PASSWORD").unwrap_or_default();
         let mut proxy = Option::from(cx.proxy().clone());
-        if proxy_http != "" && proxy_https != "" {
-            proxy = Option::from(ProxyConfig {
-                enabled: true,
-                http: Option::from(proxy_http),
-                https: Option::from(proxy_https),
-                no_proxy: Default::default(),
-                username: Option::from(proxy_username),
-                password: Option::from(proxy_password),
-            });
+        if proxy_protocol != "" && proxy_url != "" {
+            let proxy_url_with_protocol = format!("{}://{}", proxy_protocol, proxy_url);
+            proxy = match proxy_protocol.as_str() {
+                "http" => Option::from(ProxyConfig {
+                    enabled: true,
+                    http: Option::from(proxy_url_with_protocol),
+                    username: Option::from(proxy_username),
+                    password: Option::from(proxy_password),
+                    ..cx.proxy().clone()
+                }),
+                "https" => Option::from(ProxyConfig {
+                    enabled: true,
+                    https: Option::from(proxy_url_with_protocol),
+                    username: Option::from(proxy_username),
+                    password: Option::from(proxy_password),
+                    ..cx.proxy().clone()
+                }),
+                _ => Option::from(cx.proxy().clone())
+            };
         }
 
         let client = HttpClient::new(tls, &self.proxy.clone().unwrap_or_default())?;
@@ -174,8 +184,6 @@ impl SinkConfig for OpsRampConfig {
             proxy: proxy.clone(),
             ..self.clone()
         };
-
-        println!("OpsRamp Config: {:?}", config);
 
         let sink = OpsRampSink::new(config.clone());
 
