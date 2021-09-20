@@ -28,10 +28,12 @@ use crate::{
 use futures::{FutureExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use base64;
+use std::env;
+use http::Uri;
+use std::convert::TryFrom;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -45,6 +47,7 @@ struct OpsRampAuthResponse {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OpsRampConfig {
+    #[serde(default)]
     endpoint: UriSerde,
     encoding: EncodingConfig<Encoding>,
 
@@ -126,13 +129,53 @@ impl SinkConfig for OpsRampConfig {
             .timeout(1)
             .parse_config(self.batch)?;
         let tls = TlsSettings::from_options(&self.tls)?;
-        let client = HttpClient::new(tls, cx.proxy())?;
+
+        let endpoint = match env::var("ENDPOINT") {
+            Ok(val) => UriSerde { uri: val.parse::<Uri>().unwrap_or_default(), auth: self.endpoint.auth.clone() },
+            Err(..) => self.endpoint.clone(),
+        };
+        let tenant_id = match env::var("TENANT_ID") {
+            Ok(val) => Option::from(Template::try_from(val).unwrap_or_default()),
+            Err(..) => self.tenant_id.clone(),
+        };
+        let client_key = match env::var("CLIENT_KEY") {
+            Ok(val) => Option::from(Template::try_from(val).unwrap_or_default()),
+            Err(..) => self.client_key.clone(),
+        };
+        let client_secret = match env::var("CLIENT_SECRET") {
+            Ok(val) => Option::from(Template::try_from(val).unwrap_or_default()),
+            Err(..) => self.client_secret.clone(),
+        };
+
+        let proxy_http = env::var("PROXY_HTTP").unwrap_or_default();
+        let proxy_https = env::var("PROXY_HTTPS").unwrap_or_default();
+        let proxy_username = env::var("PROXY_USERNAME").unwrap_or_default();
+        let proxy_password = env::var("PROXY_PASSWORD").unwrap_or_default();
+        let mut proxy = Option::from(cx.proxy().clone());
+        if proxy_http != "" && proxy_https != "" {
+            proxy = Option::from(ProxyConfig {
+                enabled: true,
+                http: Option::from(proxy_http),
+                https: Option::from(proxy_https),
+                no_proxy: Default::default(),
+                username: Option::from(proxy_username),
+                password: Option::from(proxy_password),
+            });
+        }
+
+        let client = HttpClient::new(tls, &self.proxy.clone().unwrap_or_default())?;
 
         let config = OpsRampConfig {
-            auth: self.auth.choose_one(&self.endpoint.auth)?,
-            proxy: Option::from(cx.proxy().clone()),
+            endpoint: endpoint.clone(),
+            tenant_id,
+            client_key,
+            client_secret,
+            auth: endpoint.auth.choose_one(&endpoint.auth)?,
+            proxy: proxy.clone(),
             ..self.clone()
         };
+
+        println!("OpsRamp Config: {:?}", config);
 
         let sink = OpsRampSink::new(config.clone());
 
@@ -220,36 +263,36 @@ impl OpsRampSink {
     }
 }
 
-pub fn keysecret_replacement(
-    key: String,
-    secret: String,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let yaml_content = fs::read_to_string("/opt/opsramp/agent/conf/log/log-config.yaml");
-    if yaml_content.is_ok() {
-        let replaced_yaml_content = yaml_content
-            .unwrap()
-            .replace(&key, "<ENCRYPTED_KEY>")
-            .replace(&secret, "<ENCRYPTED_SECRET>");
-        fs::write(
-            "/opt/opsramp/agent/conf/log/log-config.yaml",
-            replaced_yaml_content,
-        );
-    }
-
-    let logd_yaml_content = fs::read_to_string("/opt/opsramp/agent/conf/log.d/log-config.yaml");
-    if logd_yaml_content.is_ok() {
-        let logd_replaced_yaml_content = logd_yaml_content
-            .unwrap()
-            .replace(&key, "<ENCRYPTED_KEY>")
-            .replace(&secret, "<ENCRYPTED_SECRET>");
-        fs::write(
-            "/opt/opsramp/agent/conf/log.d/log-config.yaml",
-            logd_replaced_yaml_content,
-        );
-    }
-
-    Ok(())
-}
+// pub fn keysecret_replacement(
+//     key: String,
+//     secret: String,
+// ) -> Result<(), Box<dyn std::error::Error>> {
+//     let yaml_content = fs::read_to_string("/opt/opsramp/agent/conf/log/log-config.yaml");
+//     if yaml_content.is_ok() {
+//         let replaced_yaml_content = yaml_content
+//             .unwrap()
+//             .replace(&key, "<ENCRYPTED_KEY>")
+//             .replace(&secret, "<ENCRYPTED_SECRET>");
+//         fs::write(
+//             "/opt/opsramp/agent/conf/log/log-config.yaml",
+//             replaced_yaml_content,
+//         );
+//     }
+//
+//     let logd_yaml_content = fs::read_to_string("/opt/opsramp/agent/conf/log.d/log-config.yaml");
+//     if logd_yaml_content.is_ok() {
+//         let logd_replaced_yaml_content = logd_yaml_content
+//             .unwrap()
+//             .replace(&key, "<ENCRYPTED_KEY>")
+//             .replace(&secret, "<ENCRYPTED_SECRET>");
+//         fs::write(
+//             "/opt/opsramp/agent/conf/log.d/log-config.yaml",
+//             logd_replaced_yaml_content,
+//         );
+//     }
+//
+//     Ok(())
+// }
 
 #[async_trait::async_trait]
 impl HttpSink for OpsRampSink {
@@ -304,7 +347,7 @@ impl HttpSink for OpsRampSink {
             *self.gclient_key.write().unwrap() = ckey.clone();
             *self.gclient_secret.write().unwrap() = csecret.clone();
             println!("Calling key replacement");
-            keysecret_replacement(ckey, csecret);
+            // keysecret_replacement(ckey, csecret);
         }
 
         let mut labels = Vec::new();
