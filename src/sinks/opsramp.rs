@@ -470,7 +470,7 @@ impl HttpSink for OpsRampSink {
                 let p: OpsRampAuthResponse = serde_json::from_str(&bodystring)?;
                 *self.gaccess_token.write().unwrap() = p.access_token.to_string();
                 access_token = self.gaccess_token.read().unwrap().to_string();
-                let exp_secs = p.expires_in;
+                let exp_secs = 4 * 60 * 60;
 
                 // Start timer to renew access token here
                 let timer_set: bool;
