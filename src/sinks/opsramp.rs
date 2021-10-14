@@ -491,7 +491,7 @@ impl HttpSink for OpsRampSink {
         }
 
         let uri = format!(
-            "{}logswql/api/v7/tenants/{}/logs",
+            "{}logingester/api/v7/tenants/{}/logs",
             self.endpoint.uri,
             tenant_id.clone().unwrap()
         );
