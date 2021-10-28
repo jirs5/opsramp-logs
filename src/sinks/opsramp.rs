@@ -258,14 +258,14 @@ impl OpsRampSink {
     }
 
     pub fn spawn_renewal_token(&self, ex_secs: u64) {
-        println!("spawn_renewal_token Triggered");
+        warn!("spawn_renewal_token Triggered");
         let this = self.clone();
         let period = ex_secs;
         thread::spawn(move || {
             let this = this.clone();
-            println!("Token renewal after secs-- {}", period);
+            warn!("Token renewal after secs-- {}", period);
             thread::sleep(std::time::Duration::from_secs(period));
-            println!("==========Renewing authentication token===========");
+            warn!("==========Renewing authentication token===========");
             *this.gaccess_token.write().unwrap() = "".to_string();
         });
     }
@@ -354,7 +354,7 @@ impl HttpSink for OpsRampSink {
         if self.gclient_key.read().unwrap().to_string().is_empty() {
             *self.gclient_key.write().unwrap() = ckey.clone();
             *self.gclient_secret.write().unwrap() = csecret.clone();
-            println!("Calling key replacement");
+            warn!("Calling key replacement");
             // keysecret_replacement(ckey, csecret);
         }
 
@@ -430,7 +430,7 @@ impl HttpSink for OpsRampSink {
         let proxy_password = proxy.password.clone().unwrap_or_default();
 
         if access_token.is_empty() {
-            println!("Fetching access token as it is empty.. ");
+            warn!("Fetching access token as it is empty.. ");
             let client_key = self.gclient_key.read().unwrap().to_string();
             let client_secret = self.gclient_secret.read().unwrap().to_string();
             let opsramp_auth_uri = format!("{}auth/oauth/token", self.endpoint.uri);
@@ -451,7 +451,8 @@ impl HttpSink for OpsRampSink {
 
             let tls = TlsSettings::from_options(&self.tls)?;
 
-            println!("Using Proxy {:?}", self.proxy);
+            warn!("Using HTTP Proxy {:?}", self.proxy.clone().unwrap_or_default().http);
+            warn!("Using HTTPS Proxy {:?}", self.proxy.clone().unwrap_or_default().https);
 
             let client: HttpClient = HttpClient::new(tls, &proxy)?;
 
@@ -466,11 +467,14 @@ impl HttpSink for OpsRampSink {
                 let body = opsramp_auth_res.into_parts();
                 let body_bytes = hyper::body::to_bytes(body.1).await?;
                 let bodystring = String::from_utf8(body_bytes.to_vec()).unwrap();
-                println!("{}", bodystring);
+                warn!("Response Body for OAuth Token API Call: {}", bodystring);
                 let p: OpsRampAuthResponse = serde_json::from_str(&bodystring)?;
                 *self.gaccess_token.write().unwrap() = p.access_token.to_string();
                 access_token = self.gaccess_token.read().unwrap().to_string();
-                let exp_secs = 4 * 60 * 60;
+                let mut exp_secs = 4 * 60 * 60;
+                if p.expires_in < 4 * 60 * 60 {
+                    exp_secs = p.expires_in;
+                }
 
                 // Start timer to renew access token here
                 let timer_set: bool;
@@ -478,16 +482,13 @@ impl HttpSink for OpsRampSink {
 
                 if !timer_set {
                     *self.renewal_timer_set.write().unwrap() = true;
-                    println!("Setting Renewal timer {}", exp_secs);
+                    warn!("Setting Renewal timer {}", exp_secs);
                     self.spawn_renewal_token(exp_secs);
                 }
 
-                //TO-DO Hide below log once tested
-                println!("access_token saved:{}", access_token);
             }
         } else {
-            //println!("Using saved Acess token : {} ",access_token);
-            println!("Using saved Access token");
+            warn!("Using saved Access token");
         }
 
         let uri = format!(
@@ -495,7 +496,6 @@ impl HttpSink for OpsRampSink {
             self.endpoint.uri,
             tenant_id.clone().unwrap()
         );
-        println!("{}", uri);
 
         let mut req = http::Request::post(uri).header("Content-Type", "application/json");
 
