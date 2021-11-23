@@ -34,6 +34,9 @@ use base64;
 use std::env;
 use http::Uri;
 use std::convert::TryFrom;
+use std::io::prelude::*;
+use flate2::read::GzDecoder;
+use rdkafka::message::ToBytes;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -466,8 +469,22 @@ impl HttpSink for OpsRampSink {
             } else {
                 let body = opsramp_auth_res.into_parts();
                 let body_bytes = hyper::body::to_bytes(body.1).await?;
-                let bodystring = String::from_utf8(body_bytes.to_vec()).unwrap();
-                warn!("Response Body for OAuth Token API Call: {}", bodystring);
+
+                let mut bodystring = String::new();
+
+                if body.0.headers.get("content-encoding").is_some() {
+                    let content_encoding = body.0.headers.get("content-encoding").unwrap();
+                    let content_encoding_str = content_encoding.to_str().unwrap_or_default();
+                    if content_encoding_str == "gzip" {
+                        let encoding_string = body_bytes.to_bytes();
+                        info!("content encoding is {:?}",content_encoding_str);
+                        let mut decoder = GzDecoder::new(encoding_string);
+                        let _ = decoder.read_to_string(&mut bodystring);
+                    }
+                } else {
+                    bodystring = String::from_utf8(body_bytes.to_vec()).unwrap();
+                }
+                info!("Response Body for OAuth Token API Call: {}", bodystring);
                 let p: OpsRampAuthResponse = serde_json::from_str(&bodystring)?;
                 *self.gaccess_token.write().unwrap() = p.access_token.to_string();
                 access_token = self.gaccess_token.read().unwrap().to_string();
@@ -485,7 +502,6 @@ impl HttpSink for OpsRampSink {
                     warn!("Setting Renewal timer {}", exp_secs);
                     self.spawn_renewal_token(exp_secs);
                 }
-
             }
         } else {
             warn!("Using saved Access token");
