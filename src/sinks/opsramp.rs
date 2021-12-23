@@ -270,6 +270,7 @@ impl OpsRampSink {
             thread::sleep(std::time::Duration::from_secs(period));
             warn!("==========Renewing authentication token===========");
             *this.gaccess_token.write().unwrap() = "".to_string();
+            *this.renewal_timer_set.write().unwrap() = false;
         });
     }
 }
